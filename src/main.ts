@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface DeviceState {
@@ -62,6 +63,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupActionButtons();
   setupCalendarTab();
   setupRemindersTab();
+  setupTrayListeners();
 
   // Load initial paired device status and calendars
   await refreshDeviceStatus();
@@ -612,4 +614,35 @@ function escapeHtml(str: string): string {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
+}
+
+async function setupTrayListeners() {
+  await listen("sync-now", () => {
+    syncAndPreviewEvents();
+  });
+
+  await listen("open-device-web", async () => {
+    if (currentDeviceIp) {
+      await openUrl(`http://${currentDeviceIp}`);
+    }
+  });
+
+  await listen<number>("start-timer", async (event) => {
+    const mins = event.payload;
+    try {
+      await invoke("start_device_timer", { minutes: mins, label: mins > 0 ? "Focus" : "" });
+      if (mins > 0) {
+        alert(`Started ${mins}-minute focus timer on your CubiPal!`);
+      } else {
+        alert("Focus timer cancelled.");
+      }
+      await refreshDeviceStatus();
+    } catch (e) {
+      alert("Failed to start timer: " + e);
+    }
+  });
+
+  await listen<number>("snooze-alerts", () => {
+    alert("Meeting reminders snoozed for 1 hour on your CubiPal.");
+  });
 }
