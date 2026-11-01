@@ -185,3 +185,91 @@ pub async fn sync_calendar_events(
 
     Ok(filtered)
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevicePushEvent {
+    pub id: String,
+    pub title: String,
+    pub start: i64,
+    pub end: i64,
+    #[serde(rename = "chimeLeadMin")]
+    pub chime_lead_min: u8,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DevicePushPayload {
+    events: Vec<DevicePushEvent>,
+}
+
+#[tauri::command]
+pub async fn push_events_to_device(
+    events: Vec<CalendarEvent>,
+    lead_time_min: u8,
+) -> Result<bool, String> {
+    let (ip, token) = match crate::device::get_saved_device_credentials() {
+        Some(creds) => creds,
+        None => return Ok(false),
+    };
+
+    let push_events: Vec<DevicePushEvent> = events
+        .into_iter()
+        .take(2)
+        .map(|e| DevicePushEvent {
+            id: e.id,
+            title: e.title,
+            start: e.start,
+            end: e.end,
+            chime_lead_min: lead_time_min,
+        })
+        .collect();
+
+    let payload = DevicePushPayload { events: push_events };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let res = client
+        .put(format!("http://{}/api/events", ip))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("X-Pet", "1")
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach CubiPal: {}", e))?;
+
+    if res.status().is_success() {
+        Ok(true)
+    } else {
+        Err(format!("Device returned HTTP {}", res.status()))
+    }
+}
+
+#[tauri::command]
+pub async fn test_device_chime() -> Result<(), String> {
+    let (ip, token) = crate::device::get_saved_device_credentials()
+        .ok_or_else(|| "No CubiPal is currently paired.".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let res = client
+        .post(format!("http://{}/api/message", ip))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("X-Pet", "1")
+        .form(&[("m", "Meeting Chime Test")])
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach CubiPal: {}", e))?;
+
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Device returned HTTP {}", res.status()))
+    }
+}
+

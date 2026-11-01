@@ -37,6 +37,8 @@ pub fn run() {
             calendar::disconnect_ics,
             calendar::get_connected_accounts,
             calendar::sync_calendar_events,
+            calendar::push_events_to_device,
+            calendar::test_device_chime,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

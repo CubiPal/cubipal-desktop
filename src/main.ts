@@ -61,6 +61,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupPairingModal();
   setupActionButtons();
   setupCalendarTab();
+  setupRemindersTab();
 
   // Load initial paired device status and calendars
   await refreshDeviceStatus();
@@ -69,6 +70,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Poll state every 15 seconds
   setInterval(refreshDeviceStatus, 15000);
+
+  // Background calendar sync and event push every 5 minutes (KAN-33)
+  setInterval(syncAndPreviewEvents, 300000);
 });
 
 function setupTabs() {
@@ -478,6 +482,35 @@ async function refreshConnectedAccounts() {
   }
 }
 
+function getSelectedLeadTime(): number {
+  const selected = document.querySelector<HTMLInputElement>('input[name="lead-time"]:checked');
+  return selected ? parseInt(selected.value, 10) || 5 : 5;
+}
+
+function setupRemindersTab() {
+  const btnTestChime = document.getElementById("btn-test-chime");
+  if (btnTestChime) {
+    btnTestChime.addEventListener("click", async () => {
+      btnTestChime.setAttribute("disabled", "true");
+      btnTestChime.textContent = "Chiming...";
+      try {
+        await invoke("test_device_chime");
+      } catch (err) {
+        alert("Failed to play chime: " + err);
+      } finally {
+        btnTestChime.removeAttribute("disabled");
+        btnTestChime.textContent = "Play Test Chime";
+      }
+    });
+  }
+
+  document.querySelectorAll<HTMLInputElement>('input[name="lead-time"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      syncAndPreviewEvents();
+    });
+  });
+}
+
 async function syncAndPreviewEvents() {
   const previewContainer = document.getElementById("calendar-events-preview");
   const btnRefresh = document.getElementById("btn-refresh-calendar") as HTMLButtonElement | null;
@@ -500,6 +533,16 @@ async function syncAndPreviewEvents() {
     };
 
     const events = await invoke<CalendarEvent[]>("sync_calendar_events", { settings });
+
+    // Push next events to paired CubiPal (KAN-33)
+    try {
+      await invoke("push_events_to_device", {
+        events,
+        leadTimeMin: getSelectedLeadTime(),
+      });
+    } catch (pushErr) {
+      console.warn("Event push to paired CubiPal failed or device offline:", pushErr);
+    }
 
     if (events.length === 0) {
       previewContainer.innerHTML = `<p class="text-muted text-xs py-2">No upcoming meetings found for the selected filters.</p>`;

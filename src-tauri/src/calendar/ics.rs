@@ -148,3 +148,4 @@ fn unescape_ics_text(val: &str) -> String {
         .replace("\\;", ";")
         .replace("\\\\", "\\")
 }
+
