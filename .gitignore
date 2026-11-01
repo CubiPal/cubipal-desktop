@@ -1,0 +1,25 @@
+# Rust / Cargo
+**/target/
+**/*.rs.bk
+
+# Node / Web Frontend
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+
+# Tauri build artifacts
+src-tauri/target/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors & IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
