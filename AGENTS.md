@@ -80,3 +80,4 @@ This file is shared between **Google Antigravity** (`AGENTS.md`) and **Claude Co
   - **Worker:** `cubipal-website` (`cubipal.com`, `www.cubipal.com`)
   - **D1 Database:** `cubipal-waitlist` (`2df2446d-6abe-4a07-b5b2-a8c56205e9c4`)
   - **Turnstile Widget:** `cubipal.com waitlist` (secret stored in Worker secret `TURNSTILE_SECRET`)
+
