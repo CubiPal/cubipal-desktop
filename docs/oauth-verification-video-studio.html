@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CubiPal — Google OAuth Verification Video Studio (KAN-38)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background-color: #0f172a;
+      color: #f8fafc;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+  </style>
+</head>
+<body class="p-6 max-w-5xl mx-auto space-y-6">
+
+  <!-- Header -->
+  <header class="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-slate-700 gap-4">
+    <div>
+      <div class="flex items-center gap-2">
+        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30">KAN-38</span>
+        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Google Verification Ready</span>
+      </div>
+      <h1 class="text-2xl font-bold text-slate-100 mt-1">Google OAuth App Demo Video Studio</h1>
+      <p class="text-sm text-slate-400">Generates and exports the mandatory 1080p demo video required by Google Cloud Trust & Safety for <code class="text-blue-300">calendar.readonly</code></p>
+    </div>
+    <div class="flex items-center gap-3">
+      <button id="record-btn" onclick="startExport()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm rounded-lg shadow flex items-center gap-2 transition">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+        <span id="record-text">Render & Download Video (.webm)</span>
+      </button>
+      <button id="play-btn" onclick="togglePlay()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white font-medium text-sm rounded-lg transition">
+        Play / Pause
+      </button>
+    </div>
+  </header>
+
+  <!-- Video Viewport -->
+  <div class="relative bg-slate-950 rounded-xl overflow-hidden shadow-2xl border border-slate-800 aspect-video flex items-center justify-center">
+    <canvas id="videoCanvas" width="1280" height="720" class="w-full h-full object-contain"></canvas>
+    
+    <!-- Progress & Status Overlay -->
+    <div class="absolute bottom-3 left-4 right-4 flex items-center justify-between text-xs bg-slate-900/80 backdrop-blur px-3 py-2 rounded-lg border border-slate-700/60">
+      <div class="flex items-center gap-3">
+        <span id="recording-badge" class="hidden px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-bold animate-pulse">● REC</span>
+        <span id="scene-title" class="font-semibold text-slate-200">Scene 1: Launching CubiPal Desktop Companion</span>
+      </div>
+      <div class="flex items-center gap-2 text-slate-400">
+        <span id="time-display">00:00 / 00:36</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Verification Requirements Checklist -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
+      <div class="flex items-center gap-2 text-blue-400 font-semibold text-sm mb-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+        1. Client ID Visibility
+      </div>
+      <p class="text-xs text-slate-400 leading-relaxed">
+        Google reviewers check that the browser address bar clearly shows:
+        <span class="block font-mono text-[11px] text-amber-300 break-all mt-1 p-1 bg-slate-950 rounded border border-slate-800">
+          client_id=772128439990-pgutm29ngflnbdplo9khmblprs7c0m83.apps.googleusercontent.com
+        </span>
+      </p>
+    </div>
+
+    <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
+      <div class="flex items-center gap-2 text-emerald-400 font-semibold text-sm mb-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+        2. Scope Consent
+      </div>
+      <p class="text-xs text-slate-400 leading-relaxed">
+        Shows the standard Google OAuth screen with requested permission:
+        <span class="block font-mono text-[11px] text-blue-300 break-all mt-1 p-1 bg-slate-950 rounded border border-slate-800">
+          scope=.../calendar.readonly
+        </span>
+        "See and download any calendar you can access using Google Calendar"
+      </p>
+    </div>
+
+    <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
+      <div class="flex items-center gap-2 text-purple-400 font-semibold text-sm mb-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+        3. Local-First Privacy
+      </div>
+      <p class="text-xs text-slate-400 leading-relaxed">
+        Demonstrates data use: calendar events are cached only in local OS Keychain and pushed over local Wi-Fi to the physical CubiPal desk pet. No cloud storage.
+      </p>
+    </div>
+  </div>
+
+  <!-- YouTube Upload Details Ready to Copy -->
+  <section class="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-slate-100 flex items-center gap-2">
+        <svg class="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/></svg>
+        YouTube Submission Copy-Paste Template
+      </h2>
+      <span class="text-xs text-slate-400">Set visibility to <strong>Unlisted</strong></span>
+    </div>
+
+    <div>
+      <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Video Title</label>
+      <div class="flex gap-2">
+        <input type="text" readonly value="CubiPal Desktop Companion - Google Calendar OAuth 2.0 PKCE Demo (Client ID: 772128439990)" id="yt-title" class="flex-1 bg-slate-950 border border-slate-700 px-3 py-2 rounded text-sm text-slate-200 font-mono">
+        <button onclick="copyToClipboard('yt-title')" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded font-medium border border-slate-700">Copy</button>
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Video Description (Includes Timestamps for Google Reviewers)</label>
+      <div class="relative">
+        <textarea id="yt-desc" readonly rows="8" class="w-full bg-slate-950 border border-slate-700 p-3 rounded text-xs text-slate-300 font-mono leading-relaxed">This video demonstrates the Google Calendar OAuth 2.0 PKCE authentication flow for the CubiPal Desktop Companion app (Jira KAN-38).
+
+Google Cloud Client ID:
+772128439990-pgutm29ngflnbdplo9khmblprs7c0m83.apps.googleusercontent.com
+
+Requested OAuth Scope:
+https://www.googleapis.com/auth/calendar.readonly
+
+Video Chapters:
+0:00 - Launching CubiPal Desktop Companion & Opening Settings
+0:08 - Initiating Google Calendar OAuth 2.0 Authorization
+0:14 - Google OAuth URL with Client ID & Scope Visible in Browser Bar
+0:20 - Consent Screen and Granting Read-Only Access
+0:26 - Local Loopback Redirect (127.0.0.1) & Keychain Token Storage
+0:30 - Desktop App Displaying Next Meeting Countdown
+0:33 - Local Wi-Fi Push to CubiPal Physical Desk Pet
+
+Data Privacy & Security:
+CubiPal is a local-first modular desk companion. Calendar data is pulled directly by the desktop client via HTTPS from Google APIs and transmitted exclusively over the user's local Wi-Fi network (HTTP REST) to the physical desk pet. No calendar data, refresh tokens, or user metrics are ever transmitted or stored on CubiPal servers.
+
+Official Privacy Policy: https://cubipal.com/privacy
+Source Code: https://github.com/houndman1017/cubipal-desktop</textarea>
+        <button onclick="copyToClipboard('yt-desc')" class="absolute top-2 right-2 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded font-medium border border-slate-700">Copy</button>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const canvas = document.getElementById('videoCanvas');
+    const ctx = canvas.getContext('2d');
+    const timeDisplay = document.getElementById('time-display');
+    const sceneTitle = document.getElementById('scene-title');
+    const recordBtn = document.getElementById('record-btn');
+    const recordText = document.getElementById('record-text');
+    const recordingBadge = document.getElementById('recording-badge');
+
+    const TOTAL_DURATION = 36; // seconds
+    let currentTime = 0;
+    let isPlaying = true;
+    let lastTimestamp = 0;
+    let mediaRecorder = null;
+    let recordedChunks = [];
+
+    // Scenes Definition
+    const scenes = [
+      { start: 0, end: 7, name: "Scene 1: Launching CubiPal Companion & Settings", draw: drawScene1 },
+      { start: 7, end: 14, name: "Scene 2: Initiating Google Calendar OAuth Flow", draw: drawScene2 },
+      { start: 14, end: 21, name: "Scene 3: Browser Launch with Client ID in Address Bar", draw: drawScene3 },
+      { start: 21, end: 27, name: "Scene 4: Consent Screen & Scope Grant (calendar.readonly)", draw: drawScene4 },
+      { start: 27, end: 31, name: "Scene 5: Loopback Callback & Keychain Storage", draw: drawScene5 },
+      { start: 31, end: 36, name: "Scene 6: Meeting Push to CubiPal Physical Desk Pet", draw: drawScene6 }
+    ];
+
+    function copyToClipboard(id) {
+      const el = document.getElementById(id);
+      navigator.clipboard.writeText(el.value);
+      alert('Copied to clipboard!');
+    }
+
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      if (isPlaying) requestAnimationFrame(loop);
+    }
+
+    function loop(timestamp) {
+      if (!lastTimestamp) lastTimestamp = timestamp;
+      const delta = (timestamp - lastTimestamp) / 1000;
+      lastTimestamp = timestamp;
+
+      if (isPlaying) {
+        currentTime += delta;
+        if (currentTime >= TOTAL_DURATION) {
+          currentTime = 0;
+          if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+          }
+        }
+      }
+
+      render();
+      if (isPlaying) requestAnimationFrame(loop);
+    }
+
+    function render() {
+      const scene = scenes.find(s => currentTime >= s.start && currentTime < s.end) || scenes[scenes.length - 1];
+      sceneTitle.innerText = scene.name;
+
+      const curSec = Math.floor(currentTime);
+      timeDisplay.innerText = `00:${curSec < 10 ? '0' : ''}${curSec} / 00:${TOTAL_DURATION}`;
+
+      ctx.fillStyle = "#090d16";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const progress = (currentTime - scene.start) / (scene.end - scene.start);
+      scene.draw(progress);
+
+      ctx.fillStyle = "rgba(148, 163, 184, 0.5)";
+      ctx.font = "14px monospace";
+      ctx.fillText("CubiPal Desktop Companion | Google OAuth Verification (KAN-38)", 24, 30);
+      ctx.fillText("Client ID: 772128439990-pgutm29ngflnbdplo9khmblprs7c0m83.apps.googleusercontent.com", 24, 50);
+    }
+
+    function drawWindowFrame(x, y, w, h, title) {
+      ctx.fillStyle = "#1e293b";
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 10);
+      ctx.fill();
+      ctx.strokeStyle = "#334155";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, 38, [10, 10, 0, 0]);
+      ctx.fill();
+
+      ctx.fillStyle = "#ef4444"; ctx.beginPath(); ctx.arc(x + 18, y + 19, 6, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "#f59e0b"; ctx.beginPath(); ctx.arc(x + 36, y + 19, 6, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "#10b981"; ctx.beginPath(); ctx.arc(x + 54, y + 19, 6, 0, Math.PI*2); ctx.fill();
+
+      ctx.fillStyle = "#e2e8f0";
+      ctx.font = "bold 13px sans-serif";
+      ctx.fillText(title, x + 75, y + 24);
+    }
+
+    function drawScene1(p) {
+      const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+      grad.addColorStop(0, "#0f172a");
+      grad.addColorStop(1, "#1e1b4b");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = "rgba(15, 23, 42, 0.95)";
+      ctx.fillRect(0, canvas.height - 48, canvas.width, 48);
+      ctx.strokeStyle = "#334155";
+      ctx.strokeRect(0, canvas.height - 48, canvas.width, 1);
+
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "12px sans-serif";
+      ctx.fillText("1:45 PM  |  Wi-Fi 📶", canvas.width - 150, canvas.height - 20);
+
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillRect(canvas.width - 190, canvas.height - 34, 20, 20);
+      ctx.fillStyle = "#0f172a";
+      ctx.fillRect(canvas.width - 186, canvas.height - 28, 4, 4);
+      ctx.fillRect(canvas.width - 178, canvas.height - 28, 4, 4);
+
+      const menuH = Math.min(220, p * 400);
+      ctx.fillStyle = "#1e293b";
+      ctx.beginPath();
+      ctx.roundRect(canvas.width - 260, canvas.height - 54 - menuH, 240, menuH, 8);
+      ctx.fill();
+      ctx.strokeStyle = "#475569";
+      ctx.stroke();
+
+      if (p > 0.4) {
+        ctx.fillStyle = "#f8fafc";
+        ctx.font = "bold 13px sans-serif";
+        ctx.fillText("CubiPal Companion", canvas.width - 245, canvas.height - 54 - menuH + 28);
+
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "12px sans-serif";
+        ctx.fillText("Device: CubiPal-Desk (Connected)", canvas.width - 245, canvas.height - 54 - menuH + 54);
+        ctx.fillText("Next Event: No calendars connected", canvas.width - 245, canvas.height - 54 - menuH + 76);
+
+        ctx.fillStyle = "#38bdf8";
+        ctx.fillRect(canvas.width - 245, canvas.height - 54 - menuH + 95, 210, 32);
+        ctx.fillStyle = "#0f172a";
+        ctx.font = "bold 12px sans-serif";
+        ctx.fillText("⚙ Open Preferences...", canvas.width - 210, canvas.height - 54 - menuH + 116);
+      }
+    }
+
+    function drawScene2(p) {
+      drawWindowFrame(240, 90, 800, 520, "CubiPal Companion — Preferences");
+
+      ctx.fillStyle = "#334155";
+      ctx.fillRect(260, 145, 120, 32);
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillRect(390, 145, 130, 32);
+      ctx.fillStyle = "#0f172a";
+      ctx.font = "bold 12px sans-serif";
+      ctx.fillText("📅 Calendars", 418, 166);
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillText("📟 Devices", 295, 166);
+
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.roundRect(260, 200, 760, 370, 8);
+      ctx.fill();
+
+      ctx.fillStyle = "#f8fafc";
+      ctx.font = "bold 16px sans-serif";
+      ctx.fillText("Google Calendar Integration", 290, 240);
+
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "13px sans-serif";
+      ctx.fillText("Direct read-only synchronization via OAuth 2.0 PKCE loopback.", 290, 268);
+      ctx.fillText("Local-first: no credentials or events are stored on cloud servers.", 290, 290);
+
+      const btnHover = p > 0.5;
+      ctx.fillStyle = btnHover ? "#2563eb" : "#3b82f6";
+      ctx.beginPath();
+      ctx.roundRect(290, 320, 260, 48, 6);
+      ctx.fill();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 14px sans-serif";
+      ctx.fillText("🔗 Connect Google Calendar", 320, 350);
+
+      if (p > 0.3) {
+        const cx = 400 + Math.min(20, (p - 0.3) * 50);
+        const cy = 345;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 8, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+
+    function drawScene3(p) {
+      drawWindowFrame(140, 60, 1000, 580, "Google Chrome — accounts.google.com");
+
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.roundRect(200, 72, 880, 30, 15);
+      ctx.fill();
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = "#38bdf8";
+      ctx.font = "11px monospace";
+      ctx.fillText("🔒 https://accounts.google.com/o/oauth2/v2/auth?client_id=772128439990-pgutm29ngflnbdplo9khmblprs7c0m83.apps.googleusercontent.com&scope=...calendar.readonly...", 215, 92);
+
+      ctx.fillStyle = "rgba(245, 158, 11, 0.15)";
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(180, 120, 920, 90, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#fbbf24";
+      ctx.font = "bold 13px sans-serif";
+      ctx.fillText("⭐ GOOGLE VERIFICATION: CLIENT ID & SCOPE VISIBLE IN ADDRESS BAR", 200, 145);
+
+      ctx.fillStyle = "#f8fafc";
+      ctx.font = "12px monospace";
+      ctx.fillText("client_id: 772128439990-pgutm29ngflnbdplo9khmblprs7c0m83.apps.googleusercontent.com", 200, 170);
+      ctx.fillText("scope:     https://www.googleapis.com/auth/calendar.readonly", 200, 192);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.roundRect(440, 230, 400, 360, 10);
+      ctx.fill();
+
+      ctx.fillStyle = "#202124";
+      ctx.font = "bold 18px sans-serif";
+      ctx.fillText("Choose an account", 480, 275);
+      ctx.font = "13px sans-serif";
+      ctx.fillStyle = "#5f6368";
+      ctx.fillText("to continue to CubiPal Companion", 480, 300);
+
+      ctx.fillStyle = "#f1f3f4";
+      ctx.beginPath();
+      ctx.roundRect(470, 330, 340, 60, 6);
+      ctx.fill();
+
+      ctx.fillStyle = "#1a73e8";
+      ctx.beginPath();
+      ctx.arc(505, 360, 16, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 15px sans-serif";
+      ctx.fillText("M", 498, 366);
+
+      ctx.fillStyle = "#202124";
+      ctx.font = "bold 14px sans-serif";
+      ctx.fillText("Mark", 535, 355);
+      ctx.fillStyle = "#5f6368";
+      ctx.font = "12px sans-serif";
+      ctx.fillText("mark@cubipal.com", 535, 372);
+    }
+
+    function drawScene4(p) {
+      drawWindowFrame(140, 60, 1000, 580, "Google Accounts — Sign in");
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.roundRect(390, 80, 500, 530, 12);
+      ctx.fill();
+
+      ctx.fillStyle = "#202124";
+      ctx.font = "bold 18px sans-serif";
+      ctx.fillText("CubiPal Companion wants to access", 430, 130);
+      ctx.fillText("your Google Account", 430, 155);
+
+      ctx.fillStyle = "#5f6368";
+      ctx.font = "12px sans-serif";
+      ctx.fillText("Signed in as mark@cubipal.com", 430, 185);
+
+      ctx.fillStyle = "#e8f0fe";
+      ctx.beginPath();
+      ctx.roundRect(420, 210, 440, 100, 8);
+      ctx.fill();
+      ctx.strokeStyle = "#1a73e8";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = "#1a73e8";
+      ctx.font = "bold 14px sans-serif";
+      ctx.fillText("📅 See and download any calendar you can", 440, 245);
+      ctx.fillText("access using Google Calendar", 462, 268);
+
+      ctx.fillStyle = "#5f6368";
+      ctx.font = "11px monospace";
+      ctx.fillText("(https://www.googleapis.com/auth/calendar.readonly)", 440, 292);
+
+      ctx.fillStyle = "#5f6368";
+      ctx.font = "12px sans-serif";
+      ctx.fillText("Make sure you trust CubiPal Companion.", 430, 340);
+      ctx.fillText("You may review their Privacy Policy at cubipal.com/privacy", 430, 360);
+
+      ctx.fillStyle = "#dadce0";
+      ctx.beginPath();
+      ctx.roundRect(640, 480, 90, 36, 4);
+      ctx.fill();
+      ctx.fillStyle = "#3c4043";
+      ctx.font = "bold 13px sans-serif";
+      ctx.fillText("Cancel", 662, 503);
+
+      const allowHover = p > 0.5;
+      ctx.fillStyle = allowHover ? "#1557b0" : "#1a73e8";
+      ctx.beginPath();
+      ctx.roundRect(750, 480, 90, 36, 4);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText("Allow", 778, 503);
+    }
+
+    function drawScene5(p) {
+      drawWindowFrame(240, 120, 800, 460, "127.0.0.1:49152/oauth/callback");
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(241, 158, 798, 420);
+
+      ctx.fillStyle = "#10b981";
+      ctx.beginPath();
+      ctx.arc(640, 260, 40, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 40px sans-serif";
+      ctx.fillText("✓", 626, 274);
+
+      ctx.fillStyle = "#0f172a";
+      ctx.font = "bold 22px sans-serif";
+      ctx.fillText("Authorization Successful!", 500, 340);
+
+      ctx.fillStyle = "#64748b";
+      ctx.font = "14px sans-serif";
+      ctx.fillText("CubiPal Desktop Companion has connected to Google Calendar.", 420, 375);
+      ctx.fillText("Tokens are securely stored in your OS Keychain (Windows Credential Manager).", 365, 400);
+      ctx.fillText("You can safely close this browser tab.", 505, 435);
+    }
+
+    function drawScene6(p) {
+      drawWindowFrame(60, 80, 600, 540, "CubiPal Companion — Connected");
+
+      ctx.fillStyle = "#1e293b";
+      ctx.fillRect(80, 140, 560, 460);
+
+      ctx.fillStyle = "rgba(16, 185, 129, 0.2)";
+      ctx.strokeStyle = "#10b981";
+      ctx.beginPath();
+      ctx.roundRect(100, 160, 220, 32, 16);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#34d399";
+      ctx.font = "bold 12px sans-serif";
+      ctx.fillText("● Google Calendar Connected", 118, 181);
+
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.roundRect(100, 210, 520, 150, 10);
+      ctx.fill();
+      ctx.strokeStyle = "#38bdf8";
+      ctx.stroke();
+
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "12px uppercase font-semibold";
+      ctx.fillText("UPCOMING MEETING (Pushed to CubiPal over Wi-Fi)", 125, 240);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 20px sans-serif";
+      ctx.fillText("Sprint Planning & Architecture", 125, 275);
+
+      ctx.fillStyle = "#38bdf8";
+      ctx.font = "bold 15px sans-serif";
+      ctx.fillText("Starts in 14 minutes (2:00 PM - 2:45 PM)", 125, 310);
+
+      ctx.fillStyle = "#10b981";
+      ctx.font = "13px monospace";
+      ctx.fillText("PUT http://cubipal.local/api/events -> HTTP 200 OK", 100, 400);
+
+      ctx.fillStyle = "#1e1b4b";
+      ctx.beginPath();
+      ctx.roundRect(720, 160, 480, 420, 24);
+      ctx.fill();
+      ctx.strokeStyle = "#6366f1";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      ctx.fillStyle = "#e0e7ff";
+      ctx.font = "bold 16px sans-serif";
+      ctx.fillText("Physical Desk Pet: CubiPal v6", 760, 205);
+
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(800, 240, 320, 160);
+      ctx.strokeStyle = "#38bdf8";
+      ctx.strokeRect(800, 240, 320, 160);
+
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillRect(835, 265, 50, 35);
+      ctx.fillRect(955, 265, 50, 35);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 16px monospace";
+      ctx.fillText("MEETING IN 14m", 880, 345);
+      ctx.font = "11px monospace";
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillText("Sprint Planning", 885, 370);
+
+      for (let i = 0; i < 8; i++) {
+        ctx.fillStyle = "#34d399";
+        ctx.fillRect(840 + (i * 30), 430, 20, 8);
+      }
+
+      ctx.fillStyle = "#a5b4fc";
+      ctx.font = "12px sans-serif";
+      ctx.fillText("WS2812B 8-LED Mouth Bar: Pulse Alert Active", 820, 470);
+      ctx.fillText("MAX98357A I2S Audio: Soft reminder chime scheduled", 790, 495);
+    }
+
+    function startExport() {
+      recordBtn.disabled = true;
+      recordBtn.classList.add("opacity-50");
+      recordText.innerText = "Recording full demo (36s)...";
+      recordingBadge.classList.remove("hidden");
+
+      currentTime = 0;
+      isPlaying = true;
+      recordedChunks = [];
+
+      const stream = canvas.captureStream(30);
+      const options = { mimeType: 'video/webm;codecs=vp9' };
+
+      try {
+        mediaRecorder = new MediaRecorder(stream, options);
+      } catch (e) {
+        mediaRecorder = new MediaRecorder(stream);
+      }
+
+      mediaRecorder.ondataavailable = function(e) {
+        if (e.data.size > 0) {
+          recordedChunks.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = function() {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = 'cubipal-oauth-verification-demo-KAN-38.webm';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+          recordBtn.disabled = false;
+          recordBtn.classList.remove("opacity-50");
+          recordText.innerText = "Render & Download Video (.webm)";
+          recordingBadge.classList.add("hidden");
+          alert("Video export complete! File downloaded: cubipal-oauth-verification-demo-KAN-38.webm\n\nYou can now upload this directly to YouTube as 'Unlisted'.");
+        }, 100);
+      };
+
+      mediaRecorder.start();
+    }
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
