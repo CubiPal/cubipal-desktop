@@ -6,7 +6,7 @@ use std::time::Duration;
 
 // Default client ID configured under KAN-38 (overridable via environment or settings)
 pub const GOOGLE_DEFAULT_CLIENT_ID: &str =
-    "1012345678901-abcdefghijklmnopqrstuvwxyz123456.apps.googleusercontent.com";
+    "772128439990-pgutm29ngflnbdplo9khmblprs7c0m83.apps.googleusercontent.com";
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
