@@ -174,7 +174,7 @@
                 <div class="account-icon ics-icon">🔗</div>
                 <div>
                   <strong>Private Calendar Link (ICS)</strong>
-                  <div class="text-muted text-sm">Subscribe to Apple Calendar, Fastmail, or Nextcloud</div>
+                  <div class="text-muted text-sm" id="ics-status">Subscribe to Apple Calendar, Fastmail, or Nextcloud</div>
                 </div>
               </div>
               <button class="btn btn-secondary" id="btn-connect-ics">Add Link</button>
@@ -207,6 +207,17 @@
                 </div>
                 <input type="checkbox" id="toggle-skip-tentative" class="toggle-switch" checked />
               </label>
+            </div>
+          </div>
+
+          <div class="card mt-4">
+            <div class="flex-between mb-2">
+              <h4>Synced Meetings Preview</h4>
+              <button class="btn btn-secondary text-xs" id="btn-refresh-calendar">Sync Now</button>
+            </div>
+            <p class="text-muted text-xs mb-3">Next meetings scheduled to push to your CubiPal.</p>
+            <div id="calendar-events-preview" class="space-y-2">
+              <p class="text-muted text-xs py-2">No meetings synchronized yet. Connect an account above.</p>
             </div>
           </div>
         </section>

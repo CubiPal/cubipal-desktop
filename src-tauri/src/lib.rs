@@ -1,3 +1,4 @@
+mod calendar;
 mod device;
 mod tray;
 
@@ -28,6 +29,14 @@ pub fn run() {
             device::pair_pal,
             device::get_paired_device,
             device::unpair_pal,
+            calendar::connect_google_account,
+            calendar::disconnect_google_account,
+            calendar::connect_microsoft_account,
+            calendar::disconnect_microsoft_account,
+            calendar::set_ics_url,
+            calendar::disconnect_ics,
+            calendar::get_connected_accounts,
+            calendar::sync_calendar_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
