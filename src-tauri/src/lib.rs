@@ -1,5 +1,6 @@
 mod calendar;
 mod device;
+mod ota;
 mod tray;
 
 use tauri::WindowEvent;
@@ -40,6 +41,9 @@ pub fn run() {
             calendar::sync_calendar_events,
             calendar::push_events_to_device,
             calendar::test_device_chime,
+            ota::check_firmware_update,
+            ota::install_firmware_update,
+            ota::install_local_firmware,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
