@@ -80,3 +80,4 @@ As established for v1 MVP/beta, the app binaries are distributed directly via Gi
 4. Open **System Settings** > **Privacy & Security**.
 5. Scroll down to the **Security** section and click **"Open Anyway"** next to CubiPal.
 6. Click **"Open"** when prompted. Subsequent launches will open directly from your menu bar without warnings.
+

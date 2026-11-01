@@ -55,7 +55,22 @@ interface CalendarEvent {
   is_tentative: boolean;
 }
 
+interface FirmwareUpdateInfo {
+  available: boolean;
+  latest_version: string;
+  current_version: string;
+  download_url: string | null;
+  release_notes: string | null;
+}
+
+interface OtaProgress {
+  stage: string;
+  percent: number;
+  message: string;
+}
+
 let currentDeviceIp: string | null = null;
+let activeFirmwareUrl: string | null = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
@@ -64,6 +79,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupCalendarTab();
   setupRemindersTab();
   setupTrayListeners();
+  setupOta();
 
   // Load initial paired device status and calendars
   await refreshDeviceStatus();
@@ -134,7 +150,9 @@ async function refreshDeviceStatus() {
       btnOpenWeb.disabled = false;
       btnUnpair.disabled = false;
       if (btnTestChime) btnTestChime.disabled = false;
+      await checkFirmwareUpdate();
     } else if (dev && !dev.connected) {
+      document.getElementById("ota-card")?.classList.add("hidden");
       currentDeviceIp = dev.ip;
       nameEl.textContent = `${dev.robot} (Offline)`;
       subtitleEl.textContent = "Cannot reach device on the network";
@@ -150,6 +168,7 @@ async function refreshDeviceStatus() {
       btnUnpair.disabled = false;
       if (btnTestChime) btnTestChime.disabled = true;
     } else {
+      document.getElementById("ota-card")?.classList.add("hidden");
       currentDeviceIp = null;
       nameEl.textContent = "No CubiPal Paired";
       subtitleEl.textContent = "Put your Pal into pairing mode to begin";
@@ -644,5 +663,84 @@ async function setupTrayListeners() {
 
   await listen<number>("snooze-alerts", () => {
     alert("Meeting reminders snoozed for 1 hour on your CubiPal.");
+  });
+}
+
+// --------------------------------------------------------------------------
+// OTA Firmware Updates (KAN-26)
+// --------------------------------------------------------------------------
+
+async function checkFirmwareUpdate() {
+  const otaCard = document.getElementById("ota-card");
+  if (!otaCard) return;
+
+  try {
+    const info = await invoke<FirmwareUpdateInfo>("check_firmware_update");
+    if (info && info.available && info.download_url) {
+      activeFirmwareUrl = info.download_url;
+      const titleEl = document.getElementById("ota-title");
+      const descEl = document.getElementById("ota-desc");
+      if (titleEl) titleEl.textContent = `Firmware v${info.latest_version} Available`;
+      if (descEl) descEl.textContent = `Your Pal is running v${info.current_version}. Update directly over Wi-Fi.`;
+      otaCard.classList.remove("hidden");
+    } else {
+      otaCard.classList.add("hidden");
+    }
+  } catch {
+    otaCard.classList.add("hidden");
+  }
+}
+
+function setupOta() {
+  const btnInstall = document.getElementById("btn-install-ota") as HTMLButtonElement | null;
+  const progressBox = document.getElementById("ota-progress-box");
+  const progressBar = document.getElementById("ota-progress-bar");
+  const progressText = document.getElementById("ota-progress-text");
+
+  if (btnInstall) {
+    btnInstall.addEventListener("click", async () => {
+      if (!activeFirmwareUrl) return;
+      if (
+        !confirm(
+          "Install firmware update on your CubiPal now?\n\nYour Pal will flash the update over Wi-Fi and restart automatically."
+        )
+      ) {
+        return;
+      }
+      btnInstall.disabled = true;
+      btnInstall.textContent = "Updating...";
+      if (progressBox) progressBox.classList.remove("hidden");
+
+      try {
+        await invoke("install_firmware_update", { downloadUrl: activeFirmwareUrl });
+      } catch (err) {
+        alert("Firmware update failed: " + err);
+        btnInstall.disabled = false;
+        btnInstall.textContent = "Retry Update";
+      }
+    });
+  }
+
+  listen<OtaProgress>("ota-progress", (event) => {
+    const p = event.payload;
+    if (progressBox) progressBox.classList.remove("hidden");
+    if (progressBar) progressBar.style.width = `${p.percent}%`;
+    if (progressText) progressText.textContent = p.message;
+
+    if (p.stage === "completed") {
+      if (btnInstall) {
+        btnInstall.textContent = "Updated!";
+      }
+      setTimeout(async () => {
+        if (progressBox) progressBox.classList.add("hidden");
+        if (progressBar) progressBar.style.width = "0%";
+        await refreshDeviceStatus();
+      }, 5000);
+    } else if (p.stage === "error") {
+      if (btnInstall) {
+        btnInstall.disabled = false;
+        btnInstall.textContent = "Retry Update";
+      }
+    }
   });
 }

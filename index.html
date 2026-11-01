@@ -127,6 +127,25 @@
             </div>
           </div>
 
+          <!-- Firmware Update Notification Card (KAN-26) -->
+          <div class="card ota-card hidden" id="ota-card">
+            <div class="flex-between">
+              <div>
+                <strong id="ota-title">Firmware Update Available</strong>
+                <p class="text-muted text-xs" id="ota-desc">A new version is available for your CubiPal.</p>
+              </div>
+              <div class="ota-actions flex gap-2">
+                <button class="btn btn-primary text-xs" id="btn-install-ota">Install Update</button>
+              </div>
+            </div>
+            <div class="ota-progress-container hidden mt-3" id="ota-progress-box">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="ota-progress-bar" style="width: 0%"></div>
+              </div>
+              <p class="text-xs text-muted mt-1" id="ota-progress-text">Preparing...</p>
+            </div>
+          </div>
+
           <div class="card info-box">
             <div class="info-icon">💡</div>
             <div class="info-text">
