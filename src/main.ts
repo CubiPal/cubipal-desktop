@@ -32,15 +32,40 @@ interface PairResponse {
   msg?: string;
 }
 
+interface ConnectedAccounts {
+  google_connected: boolean;
+  microsoft_connected: boolean;
+  ics_url: string | null;
+}
+
+interface CalendarSyncSettings {
+  private_mode: boolean;
+  skip_all_day: boolean;
+  skip_tentative: boolean;
+}
+
+interface CalendarEvent {
+  id: string;
+  title: string;
+  start: number; // Unix epoch seconds
+  end: number;
+  source: string;
+  is_all_day: boolean;
+  is_tentative: boolean;
+}
+
 let currentDeviceIp: string | null = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
   setupPairingModal();
   setupActionButtons();
+  setupCalendarTab();
 
-  // Load initial paired device status
+  // Load initial paired device status and calendars
   await refreshDeviceStatus();
+  await refreshConnectedAccounts();
+  await syncAndPreviewEvents();
 
   // Poll state every 15 seconds
   setInterval(refreshDeviceStatus, 15000);
@@ -51,7 +76,7 @@ function setupTabs() {
   const tabPanes = document.querySelectorAll<HTMLElement>(".tab-pane");
 
   navItems.forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const targetTab = btn.getAttribute("data-tab");
       if (!targetTab) return;
 
@@ -62,6 +87,11 @@ function setupTabs() {
       const activePane = document.getElementById(`tab-${targetTab}`);
       if (activePane) {
         activePane.classList.add("active");
+      }
+
+      if (targetTab === "calendars") {
+        await refreshConnectedAccounts();
+        await syncAndPreviewEvents();
       }
     });
   });
@@ -284,4 +314,259 @@ function openPairingModal(ip: string, name: string) {
 
   modal.classList.remove("hidden");
   setTimeout(() => inputCode.focus(), 50);
+}
+
+// --------------------------------------------------------------------------
+// Calendar Integrations (KAN-30 Google, KAN-31 Microsoft, KAN-32 ICS)
+// --------------------------------------------------------------------------
+
+function setupCalendarTab() {
+  const btnGoogle = document.getElementById("btn-connect-google")!;
+  const btnMs = document.getElementById("btn-connect-ms")!;
+  const btnIcs = document.getElementById("btn-connect-ics")!;
+  const btnRefresh = document.getElementById("btn-refresh-calendar")!;
+  const togglePrivate = document.getElementById("toggle-private-mode")!;
+  const toggleAllDay = document.getElementById("toggle-skip-allday")!;
+  const toggleTentative = document.getElementById("toggle-skip-tentative")!;
+
+  btnGoogle.addEventListener("click", async () => {
+    try {
+      const accs = await invoke<ConnectedAccounts>("get_connected_accounts");
+      if (accs.google_connected) {
+        if (confirm("Disconnect Google Calendar?")) {
+          await invoke("disconnect_google_account");
+          await refreshConnectedAccounts();
+          await syncAndPreviewEvents();
+        }
+      } else {
+        btnGoogle.textContent = "Authorizing...";
+        btnGoogle.setAttribute("disabled", "true");
+        try {
+          await invoke("connect_google_account", { customClientId: null });
+          await refreshConnectedAccounts();
+          await syncAndPreviewEvents();
+        } catch (err) {
+          alert("Google authorization failed: " + err);
+          await refreshConnectedAccounts();
+        } finally {
+          btnGoogle.removeAttribute("disabled");
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  });
+
+  btnMs.addEventListener("click", async () => {
+    try {
+      const accs = await invoke<ConnectedAccounts>("get_connected_accounts");
+      if (accs.microsoft_connected) {
+        if (confirm("Disconnect Microsoft 365 Calendar?")) {
+          await invoke("disconnect_microsoft_account");
+          await refreshConnectedAccounts();
+          await syncAndPreviewEvents();
+        }
+      } else {
+        btnMs.textContent = "Authorizing...";
+        btnMs.setAttribute("disabled", "true");
+        try {
+          await invoke("connect_microsoft_account", { customClientId: null });
+          await refreshConnectedAccounts();
+          await syncAndPreviewEvents();
+        } catch (err) {
+          alert("Microsoft authorization failed: " + err);
+          await refreshConnectedAccounts();
+        } finally {
+          btnMs.removeAttribute("disabled");
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  });
+
+  btnIcs.addEventListener("click", async () => {
+    try {
+      const accs = await invoke<ConnectedAccounts>("get_connected_accounts");
+      if (accs.ics_url) {
+        if (confirm(`Remove private calendar feed?\n\n${accs.ics_url}`)) {
+          await invoke("disconnect_ics");
+          await refreshConnectedAccounts();
+          await syncAndPreviewEvents();
+        }
+      } else {
+        const url = prompt(
+          "Enter private calendar feed URL (.ics or webcal:// from Apple Calendar, Fastmail, Nextcloud, etc.):"
+        );
+        if (url && url.trim()) {
+          try {
+            await invoke("set_ics_url", { url: url.trim() });
+            await refreshConnectedAccounts();
+            await syncAndPreviewEvents();
+          } catch (err) {
+            alert("Failed to save ICS feed: " + err);
+          }
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  });
+
+  btnRefresh.addEventListener("click", () => {
+    syncAndPreviewEvents();
+  });
+
+  togglePrivate.addEventListener("change", () => syncAndPreviewEvents());
+  toggleAllDay.addEventListener("change", () => syncAndPreviewEvents());
+  toggleTentative.addEventListener("change", () => syncAndPreviewEvents());
+}
+
+async function refreshConnectedAccounts() {
+  try {
+    const accs = await invoke<ConnectedAccounts>("get_connected_accounts");
+
+    const googleStatus = document.getElementById("google-status");
+    const btnGoogle = document.getElementById("btn-connect-google") as HTMLButtonElement | null;
+    if (googleStatus && btnGoogle) {
+      if (accs.google_connected) {
+        googleStatus.textContent = "Connected via OAuth (PKCE)";
+        googleStatus.className = "text-success text-sm";
+        btnGoogle.textContent = "Disconnect";
+        btnGoogle.className = "btn btn-danger text-xs";
+      } else {
+        googleStatus.textContent = "Not connected";
+        googleStatus.className = "text-muted text-sm";
+        btnGoogle.textContent = "Connect";
+        btnGoogle.className = "btn btn-secondary";
+      }
+    }
+
+    const msStatus = document.getElementById("ms-status");
+    const btnMs = document.getElementById("btn-connect-ms") as HTMLButtonElement | null;
+    if (msStatus && btnMs) {
+      if (accs.microsoft_connected) {
+        msStatus.textContent = "Connected via Microsoft Entra";
+        msStatus.className = "text-success text-sm";
+        btnMs.textContent = "Disconnect";
+        btnMs.className = "btn btn-danger text-xs";
+      } else {
+        msStatus.textContent = "Not connected";
+        msStatus.className = "text-muted text-sm";
+        btnMs.textContent = "Connect";
+        btnMs.className = "btn btn-secondary";
+      }
+    }
+
+    const icsStatus = document.getElementById("ics-status");
+    const btnIcs = document.getElementById("btn-connect-ics") as HTMLButtonElement | null;
+    if (icsStatus && btnIcs) {
+      if (accs.ics_url) {
+        icsStatus.textContent = `Configured: ${accs.ics_url}`;
+        icsStatus.className = "text-success text-sm";
+        btnIcs.textContent = "Remove Link";
+        btnIcs.className = "btn btn-danger text-xs";
+      } else {
+        icsStatus.textContent = "Subscribe to Apple Calendar, Fastmail, or Nextcloud";
+        icsStatus.className = "text-muted text-sm";
+        btnIcs.textContent = "Add Link";
+        btnIcs.className = "btn btn-secondary";
+      }
+    }
+  } catch (err) {
+    console.error("Failed to query connected accounts:", err);
+  }
+}
+
+async function syncAndPreviewEvents() {
+  const previewContainer = document.getElementById("calendar-events-preview");
+  const btnRefresh = document.getElementById("btn-refresh-calendar") as HTMLButtonElement | null;
+  if (!previewContainer) return;
+
+  if (btnRefresh) {
+    btnRefresh.disabled = true;
+    btnRefresh.textContent = "Syncing...";
+  }
+
+  try {
+    const togglePrivate = document.getElementById("toggle-private-mode") as HTMLInputElement | null;
+    const toggleAllDay = document.getElementById("toggle-skip-allday") as HTMLInputElement | null;
+    const toggleTentative = document.getElementById("toggle-skip-tentative") as HTMLInputElement | null;
+
+    const settings: CalendarSyncSettings = {
+      private_mode: togglePrivate ? togglePrivate.checked : false,
+      skip_all_day: toggleAllDay ? toggleAllDay.checked : true,
+      skip_tentative: toggleTentative ? toggleTentative.checked : true,
+    };
+
+    const events = await invoke<CalendarEvent[]>("sync_calendar_events", { settings });
+
+    if (events.length === 0) {
+      previewContainer.innerHTML = `<p class="text-muted text-xs py-2">No upcoming meetings found for the selected filters.</p>`;
+    } else {
+      previewContainer.innerHTML = "";
+      events.slice(0, 10).forEach((evt) => {
+        const row = document.createElement("div");
+        row.className = "event-row";
+
+        const badgeClass =
+          evt.source === "google"
+            ? "badge-google"
+            : evt.source === "microsoft"
+            ? "badge-microsoft"
+            : "badge-ics";
+
+        const sourceLabel =
+          evt.source === "google"
+            ? "Google"
+            : evt.source === "microsoft"
+            ? "Outlook"
+            : "ICS";
+
+        const timeStr = formatEventTime(evt.start, evt.end);
+
+        row.innerHTML = `
+          <div class="event-details">
+            <strong>${escapeHtml(evt.title)}</strong>
+            <span class="event-time">${timeStr}</span>
+          </div>
+          <span class="event-badge ${badgeClass}">${sourceLabel}</span>
+        `;
+        previewContainer.appendChild(row);
+      });
+    }
+  } catch (err) {
+    previewContainer.innerHTML = `<p class="text-danger text-xs py-2">Sync failed: ${escapeHtml(String(err))}</p>`;
+  } finally {
+    if (btnRefresh) {
+      btnRefresh.disabled = false;
+      btnRefresh.textContent = "Sync Now";
+    }
+  }
+}
+
+function formatEventTime(startSec: number, endSec: number): string {
+  const start = new Date(startSec * 1000);
+  const end = new Date(endSec * 1000);
+  const now = new Date();
+
+  const isToday =
+    start.getFullYear() === now.getFullYear() &&
+    start.getMonth() === now.getMonth() &&
+    start.getDate() === now.getDate();
+
+  const dateLabel = isToday
+    ? "Today"
+    : start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+
+  const timeStart = start.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const timeEnd = end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+  return `${dateLabel} • ${timeStart} - ${timeEnd}`;
+}
+
+function escapeHtml(str: string): string {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
 }

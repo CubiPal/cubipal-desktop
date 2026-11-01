@@ -453,6 +453,14 @@ body {
   color: var(--text-muted);
 }
 
+.text-success {
+  color: var(--success);
+}
+
+.text-danger {
+  color: var(--danger);
+}
+
 .text-sm {
   font-size: 12px;
 }
@@ -605,4 +613,51 @@ body {
 .discovered-meta {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+
+/* Calendar Event Preview */
+.event-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.event-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.event-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.event-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.badge-google {
+  background: #fde8e7;
+  color: #c5221f;
+}
+
+.badge-microsoft {
+  background: #deecf9;
+  color: #004578;
+}
+
+.badge-ics {
+  background: #f1f5f9;
+  color: #475569;
 }

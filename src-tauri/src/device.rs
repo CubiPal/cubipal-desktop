@@ -243,3 +243,4 @@ pub fn clear_device_credentials() -> Result<(), String> {
     }
     Ok(())
 }
+
