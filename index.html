@@ -28,7 +28,7 @@
               <rect x="4" y="4" width="16" height="16" rx="4" />
               <circle cx="9" cy="10" r="1.5" fill="currentColor" />
               <circle cx="15" cy="10" r="1.5" fill="currentColor" />
-              <line x1="9" y1="15" x2="15" y2="15" stroke-linecap="round" />
+              <line x1="9" y1="15" x2="15" stroke-linecap="round" />
             </svg>
             <span>Device</span>
           </button>
@@ -116,10 +116,21 @@
             </div>
           </div>
 
+          <!-- Scan Results Card -->
+          <div class="card scan-card hidden" id="scan-results-card">
+            <div class="flex-between mb-3">
+              <h4 id="scan-title">Discovered CubiPals</h4>
+              <button class="btn btn-secondary text-xs" id="btn-manual-ip">Enter IP Manually</button>
+            </div>
+            <div id="scan-list" class="space-y-2">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+
           <div class="card info-box">
             <div class="info-icon">💡</div>
             <div class="info-text">
-              <strong>Pairing Tip:</strong> To reveal your Pal's 8-digit setup PIN, tap and hold the crown touch point for 3 seconds, let go, then hold again for 3 seconds.
+              <strong>Pairing Tip:</strong> The show-code gesture works any time. Tap and hold the crown touch point for 3 seconds, let go, then hold again for 3 seconds within 5 seconds.
             </div>
           </div>
         </section>
@@ -284,6 +295,37 @@
           </div>
         </section>
       </main>
+    </div>
+
+    <!-- Pairing Modal -->
+    <div class="modal-backdrop hidden" id="pairing-modal">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h4 id="modal-pal-name">Pair with CubiPal</h4>
+          <button class="modal-close" id="btn-modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="pairing-instructions">
+            <p class="mb-2"><strong>Touch Pattern:</strong></p>
+            <ol class="instruction-steps">
+              <li>Touch and hold the crown touch point for <strong>3 seconds</strong>.</li>
+              <li>Let go, then hold again for <strong>3 seconds</strong> (within 5 seconds).</li>
+              <li>Your Pal's eyes will show the <strong>8-digit pairing code</strong>.</li>
+            </ol>
+          </div>
+
+          <div class="code-entry mt-4">
+            <label for="input-pairing-code" class="spec-label">Enter 8-Digit Code</label>
+            <input type="text" id="input-pairing-code" class="code-input" placeholder="4821 7390" maxlength="9" />
+            <input type="hidden" id="modal-target-ip" />
+            <div class="error-msg hidden" id="pairing-error-msg"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btn-modal-cancel">Cancel</button>
+          <button class="btn btn-primary" id="btn-modal-pair">Pair Pal</button>
+        </div>
+      </div>
     </div>
   </body>
 </html>

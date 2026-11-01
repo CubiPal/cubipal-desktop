@@ -1,3 +1,4 @@
+mod device;
 mod tray;
 
 use tauri::WindowEvent;
@@ -21,7 +22,13 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![show_preferences_window])
+        .invoke_handler(tauri::generate_handler![
+            show_preferences_window,
+            device::scan_for_pals,
+            device::pair_pal,
+            device::get_paired_device,
+            device::unpair_pal,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

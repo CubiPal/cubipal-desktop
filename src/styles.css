@@ -479,3 +479,130 @@ body {
   text-decoration: underline;
   color: var(--accent-color);
 }
+
+
+/* Hidden utility */
+.hidden {
+  display: none !important;
+}
+
+/* Modal Dialog */
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-dialog {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  width: 440px;
+  max-width: 90vw;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h4 {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 20px;
+}
+
+.instruction-steps {
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.instruction-steps strong {
+  color: var(--text-main);
+}
+
+.code-input {
+  width: 100%;
+  font-family: monospace;
+  font-size: 20px;
+  letter-spacing: 0.15em;
+  text-align: center;
+  padding: 10px 14px;
+  margin-top: 6px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-main);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.code-input:focus {
+  border-color: var(--accent-color);
+}
+
+.error-msg {
+  color: var(--danger-color);
+  font-size: 12px;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border-color);
+}
+
+.scan-card {
+  margin-top: 16px;
+}
+
+.discovered-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.discovered-info strong {
+  font-size: 13px;
+}
+
+.discovered-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
