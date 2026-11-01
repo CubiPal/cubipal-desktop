@@ -215,6 +215,34 @@ pub async fn unpair_pal() -> Result<(), String> {
     clear_device_credentials()
 }
 
+#[tauri::command]
+pub async fn start_device_timer(minutes: u32, label: String) -> Result<(), String> {
+    let (ip, token) = get_saved_device_credentials()
+        .ok_or_else(|| "No CubiPal is currently paired.".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let form = [("min", minutes.to_string()), ("label", label)];
+
+    let res = client
+        .post(format!("http://{}/api/timer", ip))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("X-Pet", "1")
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach CubiPal: {}", e))?;
+
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Device returned HTTP {}", res.status()))
+    }
+}
+
 pub fn store_device_credentials(ip: &str, token: &str) -> Result<(), String> {
     let entry_tok = Entry::new(KEYRING_SERVICE, KEYRING_TOKEN_USER).map_err(|e| e.to_string())?;
     entry_tok.set_password(token).map_err(|e| e.to_string())?;

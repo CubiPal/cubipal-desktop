@@ -68,6 +68,37 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                         let _ = window.emit("open-device-web", ());
                     }
                 }
+                "check_updates" => {
+                    let _ = open::that("https://github.com/houndman1017/cubipal-desktop/releases");
+                }
+                "sync_now" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("sync-now", ());
+                    }
+                }
+                "timer_30" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("start-timer", 30);
+                    }
+                }
+                "timer_60" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("start-timer", 60);
+                    }
+                }
+                "timer_custom" => {
+                    show_preferences(app);
+                }
+                "timer_cancel" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("start-timer", 0);
+                    }
+                }
+                "snooze" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("snooze-alerts", 60);
+                    }
+                }
                 "quit" => {
                     app.exit(0);
                 }
