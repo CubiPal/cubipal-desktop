@@ -100,3 +100,4 @@ fn extract_code_from_query(request: &str) -> Option<String> {
     }
     None
 }
+
