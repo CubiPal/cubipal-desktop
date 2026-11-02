@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use std::time::Duration;
 use chrono::Utc;
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use super::{CalendarSyncSettings, DevicePushEvent, DevicePushPayload, KEYRING_SERVICE};
 
@@ -39,12 +39,11 @@ pub struct SyncEngine {
 static SYNC_ENGINE: Mutex<Option<SyncEngine>> = Mutex::const_new(None);
 
 pub fn get_saved_calendar_config() -> CalendarSyncConfig {
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_CALENDAR_CONFIG) {
-        if let Ok(json_str) = entry.get_password() {
-            if let Ok(cfg) = serde_json::from_str::<CalendarSyncConfig>(&json_str) {
-                return cfg;
-            }
-        }
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_CALENDAR_CONFIG)
+        && let Ok(json_str) = entry.get_password()
+        && let Ok(cfg) = serde_json::from_str::<CalendarSyncConfig>(&json_str)
+    {
+        return cfg;
     }
     CalendarSyncConfig::default()
 }
@@ -225,7 +224,11 @@ fn update_tray_display(events: &[DevicePushEvent]) {
 
         let display_text = if now >= next.start && now < next.end {
             let mins_left = (next.end - now) / 60;
-            format!("Now: {} ({}m left)", truncate_str(&next.title, 18), mins_left)
+            format!(
+                "Now: {} ({}m left)",
+                truncate_str(&next.title, 18),
+                mins_left
+            )
         } else if rem_min <= 0 {
             format!("Next: {} (starting now)", truncate_str(&next.title, 18))
         } else if rem_min < 60 {
@@ -233,7 +236,12 @@ fn update_tray_display(events: &[DevicePushEvent]) {
         } else {
             let hours = rem_min / 60;
             let mins = rem_min % 60;
-            format!("Next: {} (in {}h {}m)", truncate_str(&next.title, 16), hours, mins)
+            format!(
+                "Next: {} (in {}h {}m)",
+                truncate_str(&next.title, 16),
+                hours,
+                mins
+            )
         };
 
         crate::tray::update_tray_next_event(&display_text);

@@ -5,8 +5,8 @@ pub mod oauth;
 pub mod sync_engine;
 
 pub use sync_engine::{
-    get_saved_calendar_config, save_calendar_config_to_keyring, start_background_sync,
-    trigger_immediate_sync, CalendarSyncConfig,
+    CalendarSyncConfig, get_saved_calendar_config, save_calendar_config_to_keyring,
+    start_background_sync, trigger_immediate_sync,
 };
 
 use chrono::Utc;
@@ -155,35 +155,30 @@ pub async fn sync_calendar_events(
     let now = Utc::now().timestamp();
 
     // 1. Google Calendar
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_GOOGLE_REFRESH) {
-        if let Ok(refresh) = entry.get_password() {
-            if let Ok(events) =
-                google::fetch_google_events(google::GOOGLE_DEFAULT_CLIENT_ID, &refresh).await
-            {
-                all_events.extend(events);
-            }
-        }
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_GOOGLE_REFRESH)
+        && let Ok(refresh) = entry.get_password()
+        && let Ok(events) =
+            google::fetch_google_events(google::GOOGLE_DEFAULT_CLIENT_ID, &refresh).await
+    {
+        all_events.extend(events);
     }
 
     // 2. Microsoft 365
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_MICROSOFT_REFRESH) {
-        if let Ok(refresh) = entry.get_password() {
-            if let Ok(events) =
-                microsoft::fetch_microsoft_events(microsoft::MICROSOFT_DEFAULT_CLIENT_ID, &refresh)
-                    .await
-            {
-                all_events.extend(events);
-            }
-        }
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_MICROSOFT_REFRESH)
+        && let Ok(refresh) = entry.get_password()
+        && let Ok(events) =
+            microsoft::fetch_microsoft_events(microsoft::MICROSOFT_DEFAULT_CLIENT_ID, &refresh)
+                .await
+    {
+        all_events.extend(events);
     }
 
     // 3. ICS Calendar Feed
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_ICS_URL) {
-        if let Ok(url) = entry.get_password() {
-            if let Ok(events) = ics::fetch_ics_events(&url).await {
-                all_events.extend(events);
-            }
-        }
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_ICS_URL)
+        && let Ok(url) = entry.get_password()
+        && let Ok(events) = ics::fetch_ics_events(&url).await
+    {
+        all_events.extend(events);
     }
 
     // Filter pipeline:
@@ -247,7 +242,9 @@ pub async fn push_events_to_device(
         })
         .collect();
 
-    let payload = DevicePushPayload { events: push_events };
+    let payload = DevicePushPayload {
+        events: push_events,
+    };
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -296,4 +293,3 @@ pub async fn test_device_chime() -> Result<(), String> {
         Err(format!("Device returned HTTP {}", res.status()))
     }
 }
-
