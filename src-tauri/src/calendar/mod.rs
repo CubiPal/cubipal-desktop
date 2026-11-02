@@ -2,6 +2,12 @@ pub mod google;
 pub mod ics;
 pub mod microsoft;
 pub mod oauth;
+pub mod sync_engine;
+
+pub use sync_engine::{
+    get_saved_calendar_config, save_calendar_config_to_keyring, start_background_sync,
+    trigger_immediate_sync, CalendarSyncConfig,
+};
 
 use chrono::Utc;
 use keyring::Entry;
@@ -121,6 +127,24 @@ pub fn get_connected_accounts() -> Result<ConnectedAccounts, String> {
         microsoft_connected,
         ics_url,
     })
+}
+
+#[tauri::command]
+pub fn get_calendar_sync_config() -> Result<CalendarSyncConfig, String> {
+    Ok(get_saved_calendar_config())
+}
+
+#[tauri::command]
+pub fn save_calendar_sync_config(config: CalendarSyncConfig) -> Result<(), String> {
+    save_calendar_config_to_keyring(&config)?;
+    trigger_immediate_sync();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn trigger_calendar_sync() -> Result<(), String> {
+    trigger_immediate_sync();
+    Ok(())
 }
 
 #[tauri::command]

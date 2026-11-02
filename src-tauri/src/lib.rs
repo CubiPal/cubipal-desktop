@@ -16,6 +16,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             tray::create_tray(app.handle())?;
+            calendar::start_background_sync(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -39,6 +40,9 @@ pub fn run() {
             calendar::set_ics_url,
             calendar::disconnect_ics,
             calendar::get_connected_accounts,
+            calendar::get_calendar_sync_config,
+            calendar::save_calendar_sync_config,
+            calendar::trigger_calendar_sync,
             calendar::sync_calendar_events,
             calendar::push_events_to_device,
             calendar::test_device_chime,
