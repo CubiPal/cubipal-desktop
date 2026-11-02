@@ -169,24 +169,30 @@ pub async fn fetch_google_events(
                 .unwrap_or_else(|| "(Untitled Meeting)".to_string());
 
             let (start_epoch, is_all_day) = match item.start {
-                Some(ref s) if s.date_time.is_some() => {
-                    let dt = DateTime::parse_from_rfc3339(s.date_time.as_ref().unwrap())
-                        .map(|d| d.timestamp())
-                        .unwrap_or(0);
-                    (dt, false)
-                }
-                Some(ref s) if s.date.is_some() => {
-                    // Date-only (all day)
-                    (0, true)
+                Some(ref s) => {
+                    if let Some(ref dt_str) = s.date_time {
+                        let dt = DateTime::parse_from_rfc3339(dt_str)
+                            .map(|d| d.timestamp())
+                            .unwrap_or(0);
+                        (dt, false)
+                    } else if s.date.is_some() {
+                        (0, true)
+                    } else {
+                        (0, false)
+                    }
                 }
                 _ => (0, false),
             };
 
             let end_epoch = match item.end {
-                Some(ref e) if e.date_time.is_some() => {
-                    DateTime::parse_from_rfc3339(e.date_time.as_ref().unwrap())
-                        .map(|d| d.timestamp())
-                        .unwrap_or(start_epoch + 1800)
+                Some(ref e) => {
+                    if let Some(ref dt_str) = e.date_time {
+                        DateTime::parse_from_rfc3339(dt_str)
+                            .map(|d| d.timestamp())
+                            .unwrap_or(start_epoch + 1800)
+                    } else {
+                        start_epoch + 1800
+                    }
                 }
                 _ => start_epoch + 1800,
             };
