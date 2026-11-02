@@ -121,8 +121,8 @@ jobs:
           mkdir -p firmware_dl
           cd firmware_dl
           echo "Checking houndman1017/CubiPal for firmware release assets..."
-          if gh release list --repo houndman1017/CubiPal --limit 1 | grep -q .; then
-            LATEST_FW_TAG=$(gh release list --repo houndman1017/CubiPal --limit 1 | awk '{print $1}')
+          LATEST_FW_TAG=$(gh release view --repo houndman1017/CubiPal --json tagName -q .tagName 2>/dev/null || true)
+          if [ -n "$LATEST_FW_TAG" ]; then
             echo "Found firmware release: $LATEST_FW_TAG"
             gh release download $LATEST_FW_TAG --repo houndman1017/CubiPal --pattern "*.bin*" || true
             for bin in *.bin; do
