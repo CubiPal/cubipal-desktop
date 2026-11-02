@@ -64,13 +64,12 @@ pub async fn check_firmware_update() -> Result<FirmwareUpdateInfo, String> {
 
     let mut release_opt: Option<GithubRelease> = None;
     for endpoint in endpoints {
-        if let Ok(resp) = client.get(endpoint).send().await {
-            if resp.status().is_success() {
-                if let Ok(rel) = resp.json::<GithubRelease>().await {
-                    release_opt = Some(rel);
-                    break;
-                }
-            }
+        if let Ok(resp) = client.get(endpoint).send().await
+            && resp.status().is_success()
+            && let Ok(rel) = resp.json::<GithubRelease>().await
+        {
+            release_opt = Some(rel);
+            break;
         }
     }
 
@@ -107,26 +106,23 @@ pub async fn check_firmware_update() -> Result<FirmwareUpdateInfo, String> {
 
     // Try to fetch expected SHA-256 from manifest or checksum file if available
     let mut expected_sha256 = None;
-    if let Some(m_url) = manifest_url {
-        if let Ok(resp) = client.get(m_url).send().await {
-            if let Ok(manifest) = resp.json::<FirmwareManifest>().await {
-                expected_sha256 = manifest.sha256;
-            }
-        }
+    if let Some(m_url) = manifest_url
+        && let Ok(resp) = client.get(m_url).send().await
+        && let Ok(manifest) = resp.json::<FirmwareManifest>().await
+    {
+        expected_sha256 = manifest.sha256;
     }
 
-    if expected_sha256.is_none() {
-        if let Some(s_url) = sha256_url {
-            if let Ok(resp) = client.get(s_url).send().await {
-                if let Ok(text) = resp.text().await {
-                    // Extract first 64-hex-char token
-                    for word in text.split_whitespace() {
-                        if word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit()) {
-                            expected_sha256 = Some(word.to_lowercase());
-                            break;
-                        }
-                    }
-                }
+    if expected_sha256.is_none()
+        && let Some(s_url) = sha256_url
+        && let Ok(resp) = client.get(s_url).send().await
+        && let Ok(text) = resp.text().await
+    {
+        // Extract first 64-hex-char token
+        for word in text.split_whitespace() {
+            if word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit()) {
+                expected_sha256 = Some(word.to_lowercase());
+                break;
             }
         }
     }
@@ -146,7 +142,11 @@ pub async fn check_firmware_update() -> Result<FirmwareUpdateInfo, String> {
 fn is_version_newer(latest: &str, current: &str) -> bool {
     let parse = |v: &str| -> Vec<u32> {
         v.split('.')
-            .map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+            .map(|p| {
+                p.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+            })
             .filter_map(|p| p.parse().ok())
             .collect()
     };
@@ -181,23 +181,29 @@ async fn check_device_idle(
         .send()
         .await;
 
-    if let Ok(resp) = res {
-        if let Ok(state) = resp.json::<serde_json::Value>().await {
-            // Check active timer
-            let timer_sec = state["timerSec"].as_u64().unwrap_or(0);
-            if timer_sec > 0 {
-                return Err("Cannot install update: a Focus or Countdown timer is currently active on CubiPal. Stop the timer or wait for it to complete first.".to_string());
-            }
+    if let Ok(resp) = res
+        && let Ok(state) = resp.json::<serde_json::Value>().await
+    {
+        // Check active timer
+        let timer_sec = state["timerSec"].as_u64().unwrap_or(0);
+        if timer_sec > 0 {
+            return Err("Cannot install update: a Focus or Countdown timer is currently active on CubiPal. Stop the timer or wait for it to complete first.".to_string());
+        }
 
-            // Check upcoming or ongoing meeting
-            if let Some(next_event) = state.get("nextEvent").filter(|e| !e.is_null()) {
-                let start_epoch = next_event["start"].as_i64().unwrap_or(0);
-                let now_epoch = chrono::Utc::now().timestamp();
-                // Meeting is within 5 minutes or in progress (<1hr past start)
-                if start_epoch > 0 && (start_epoch - now_epoch) <= 300 && (now_epoch - start_epoch) < 3600 {
-                    let title = next_event["title"].as_str().unwrap_or("Meeting");
-                    return Err(format!("Cannot install update: calendar meeting '{}' is starting or in progress. Updates are paused to prevent desk interruptions.", title));
-                }
+        // Check upcoming or ongoing meeting
+        if let Some(next_event) = state.get("nextEvent").filter(|e| !e.is_null()) {
+            let start_epoch = next_event["start"].as_i64().unwrap_or(0);
+            let now_epoch = chrono::Utc::now().timestamp();
+            // Meeting is within 5 minutes or in progress (<1hr past start)
+            if start_epoch > 0
+                && (start_epoch - now_epoch) <= 300
+                && (now_epoch - start_epoch) < 3600
+            {
+                let title = next_event["title"].as_str().unwrap_or("Meeting");
+                return Err(format!(
+                    "Cannot install update: calendar meeting '{}' is starting or in progress. Updates are paused to prevent desk interruptions.",
+                    title
+                ));
             }
         }
     }
@@ -211,7 +217,12 @@ pub async fn install_firmware_update(
     expected_sha256: Option<String>,
     force: Option<bool>,
 ) -> Result<(), String> {
-    emit_progress(&window, "downloading", 10, "Downloading firmware update from GitHub...");
+    emit_progress(
+        &window,
+        "downloading",
+        10,
+        "Downloading firmware update from GitHub...",
+    );
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
@@ -239,7 +250,12 @@ pub async fn install_firmware_update(
         .to_vec();
 
     // Verify SHA-256 integrity
-    emit_progress(&window, "verifying", 35, "Verifying firmware integrity (SHA-256)...");
+    emit_progress(
+        &window,
+        "verifying",
+        35,
+        "Verifying firmware integrity (SHA-256)...",
+    );
     let mut hasher = Sha256::new();
     hasher.update(&bin_bytes);
     let computed_hash = format!("{:x}", hasher.finalize());
@@ -256,7 +272,12 @@ pub async fn install_firmware_update(
         }
     }
 
-    emit_progress(&window, "uploading", 45, "Uploading verified firmware to CubiPal over Wi-Fi...");
+    emit_progress(
+        &window,
+        "uploading",
+        45,
+        "Uploading verified firmware to CubiPal over Wi-Fi...",
+    );
     flash_firmware_bytes(&window, &ip, &token, bin_bytes).await
 }
 
@@ -285,7 +306,12 @@ pub async fn install_local_firmware(
         .await
         .map_err(|e| format!("Failed to read file '{}': {}", file_path, e))?;
 
-    emit_progress(&window, "uploading", 40, "Uploading to CubiPal over Wi-Fi...");
+    emit_progress(
+        &window,
+        "uploading",
+        40,
+        "Uploading to CubiPal over Wi-Fi...",
+    );
     flash_firmware_bytes(&window, &ip, &token, bin_bytes).await
 }
 
@@ -307,7 +333,12 @@ async fn flash_firmware_bytes(
         .build()
         .map_err(|e| e.to_string())?;
 
-    emit_progress(window, "uploading", 70, "Writing firmware to CubiPal flash slot...");
+    emit_progress(
+        window,
+        "uploading",
+        70,
+        "Writing firmware to CubiPal flash slot...",
+    );
 
     let res = client
         .post(format!("http://{}/api/update", ip))
@@ -319,15 +350,28 @@ async fn flash_firmware_bytes(
         .map_err(|e| format!("Upload failed: {}", e))?;
 
     if res.status().is_success() {
-        emit_progress(window, "rebooting", 95, "Flashing complete. CubiPal is rebooting...");
+        emit_progress(
+            window,
+            "rebooting",
+            95,
+            "Flashing complete. CubiPal is rebooting...",
+        );
         tokio::time::sleep(Duration::from_millis(2000)).await;
-        emit_progress(window, "completed", 100, "Update successful! CubiPal has restarted.");
+        emit_progress(
+            window,
+            "completed",
+            100,
+            "Update successful! CubiPal has restarted.",
+        );
         Ok(())
     } else {
         let msg = if res.status().as_u16() == 409 {
             "Device rejected update: a timer is active on CubiPal.".to_string()
         } else {
-            format!("Device rejected update (HTTP {}). Working firmware is untouched.", res.status())
+            format!(
+                "Device rejected update (HTTP {}). Working firmware is untouched.",
+                res.status()
+            )
         };
         emit_progress(window, "error", 0, &msg);
         Err(msg)

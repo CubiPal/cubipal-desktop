@@ -1,7 +1,7 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -38,9 +38,7 @@ pub struct LoopbackServer {
 impl LoopbackServer {
     pub fn start() -> Result<Self, String> {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| e.to_string())?;
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         Ok(Self { listener, port })
     }
@@ -92,12 +90,11 @@ fn extract_code_from_query(request: &str) -> Option<String> {
 
     for pair in query.split('&') {
         let mut parts = pair.split('=');
-        if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
-            if key == "code" {
-                return Some(val.to_string());
-            }
+        if let (Some(key), Some(val)) = (parts.next(), parts.next())
+            && key == "code"
+        {
+            return Some(val.to_string());
         }
     }
     None
 }
-

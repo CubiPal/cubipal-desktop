@@ -46,46 +46,48 @@ pub struct PairResponse {
 #[tauri::command]
 pub async fn scan_for_pals() -> Result<Vec<DiscoveredPal>, String> {
     let mdns = ServiceDaemon::new().map_err(|e| e.to_string())?;
-    let receiver = mdns.browse("_cubipal._tcp.local.").map_err(|e| e.to_string())?;
+    let receiver = mdns
+        .browse("_cubipal._tcp.local.")
+        .map_err(|e| e.to_string())?;
 
     let mut pals = HashMap::new();
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(3);
 
     while start.elapsed() < timeout {
-        if let Ok(event) = receiver.recv_timeout(Duration::from_millis(250)) {
-            if let ServiceEvent::ServiceResolved(info) = event {
-                let addrs = info.get_addresses();
-                if let Some(ip) = addrs.iter().next() {
-                    let id = info
-                        .get_property_val_str("id")
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let name = info
-                        .get_property_val_str("name")
-                        .unwrap_or("Cubi")
-                        .to_string();
-                    let model = info
-                        .get_property_val_str("model")
-                        .unwrap_or("v6")
-                        .to_string();
-                    let fw = info
-                        .get_property_val_str("fw")
-                        .unwrap_or("1.0.0")
-                        .to_string();
+        if let Ok(event) = receiver.recv_timeout(Duration::from_millis(250))
+            && let ServiceEvent::ServiceResolved(info) = event
+        {
+            let addrs = info.get_addresses();
+            if let Some(ip) = addrs.iter().next() {
+                let id = info
+                    .get_property_val_str("id")
+                    .unwrap_or("unknown")
+                    .to_string();
+                let name = info
+                    .get_property_val_str("name")
+                    .unwrap_or("Cubi")
+                    .to_string();
+                let model = info
+                    .get_property_val_str("model")
+                    .unwrap_or("v6")
+                    .to_string();
+                let fw = info
+                    .get_property_val_str("fw")
+                    .unwrap_or("1.0.0")
+                    .to_string();
 
-                    pals.insert(
-                        id.clone(),
-                        DiscoveredPal {
-                            id,
-                            name,
-                            ip: ip.to_string(),
-                            port: info.get_port(),
-                            model,
-                            fw,
-                        },
-                    );
-                }
+                pals.insert(
+                    id.clone(),
+                    DiscoveredPal {
+                        id,
+                        name,
+                        ip: ip.to_string(),
+                        port: info.get_port(),
+                        model,
+                        fw,
+                    },
+                );
             }
         }
     }
@@ -101,7 +103,10 @@ pub async fn pair_pal(ip: String, code: String) -> Result<PairResponse, String> 
         .build()
         .map_err(|e| e.to_string())?;
 
-    let clean_ip = ip.trim().trim_start_matches("http://").trim_end_matches('/');
+    let clean_ip = ip
+        .trim()
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
     let url = format!("http://{}/api/pair", clean_ip);
 
     let clean_code = code.replace([' ', '-'], "");
@@ -304,4 +309,3 @@ pub fn clear_device_credentials() -> Result<(), String> {
     }
     Ok(())
 }
-

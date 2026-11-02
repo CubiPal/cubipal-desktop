@@ -1,5 +1,5 @@
-use super::oauth::{generate_pkce, LoopbackServer};
 use super::CalendarEvent;
+use super::oauth::{LoopbackServer, generate_pkce};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::time::Duration;
