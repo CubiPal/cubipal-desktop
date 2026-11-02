@@ -11,6 +11,7 @@ interface DeviceState {
   ssid?: string;
   rssi?: number;
   fw?: string;
+  skin?: string;
   ip: string;
   connected: boolean;
 }
@@ -129,6 +130,7 @@ async function refreshDeviceStatus() {
     const wifiEl = document.getElementById("spec-wifi")!;
     const fwEl = document.getElementById("spec-fw")!;
     const volumeEl = document.getElementById("spec-volume")!;
+    const skinEl = document.getElementById("spec-skin") as HTMLSelectElement | null;
     const pill = document.getElementById("sidebar-status-pill")!;
     const pillText = document.getElementById("sidebar-status-text")!;
     const btnOpenWeb = document.getElementById("btn-open-web") as HTMLButtonElement;
@@ -143,6 +145,12 @@ async function refreshDeviceStatus() {
       wifiEl.textContent = dev.ssid ? `${dev.ssid} (${dev.rssi || 0} dBm)` : "Connected";
       fwEl.textContent = dev.fw || "v1.0.0";
       volumeEl.textContent = dev.muted ? "Muted" : `Level ${dev.volume ?? 3}`;
+      if (skinEl) {
+        skinEl.disabled = false;
+        if (document.activeElement !== skinEl && dev.skin) {
+          skinEl.value = dev.skin;
+        }
+      }
 
       pill.className = "status-pill online";
       pillText.textContent = "Online";
@@ -160,6 +168,7 @@ async function refreshDeviceStatus() {
       wifiEl.textContent = "Offline";
       fwEl.textContent = "—";
       volumeEl.textContent = "—";
+      if (skinEl) skinEl.disabled = true;
 
       pill.className = "status-pill offline";
       pillText.textContent = "Offline";
@@ -176,6 +185,7 @@ async function refreshDeviceStatus() {
       wifiEl.textContent = "—";
       fwEl.textContent = "—";
       volumeEl.textContent = "—";
+      if (skinEl) skinEl.disabled = true;
 
       pill.className = "status-pill offline";
       pillText.textContent = "Disconnected";
@@ -259,6 +269,16 @@ function setupActionButtons() {
     if (confirm("Are you sure you want to unpair this CubiPal?")) {
       await invoke("unpair_pal");
       await refreshDeviceStatus();
+    }
+  });
+
+  const skinEl = document.getElementById("spec-skin") as HTMLSelectElement | null;
+  skinEl?.addEventListener("change", async () => {
+    if (!skinEl.value) return;
+    try {
+      await invoke("set_device_skin", { skin: skinEl.value });
+    } catch (e: any) {
+      console.error("Failed to update skin:", e);
     }
   });
 }

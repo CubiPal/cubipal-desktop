@@ -28,6 +28,7 @@ pub struct DeviceState {
     pub ssid: Option<String>,
     pub rssi: Option<i32>,
     pub fw: Option<String>,
+    pub skin: Option<String>,
     pub ip: String,
     pub connected: bool,
 }
@@ -173,6 +174,7 @@ pub async fn get_paired_device() -> Result<Option<DeviceState>, String> {
                 ssid: None,
                 rssi: None,
                 fw: None,
+                skin: None,
                 ip,
                 connected: false,
             }));
@@ -189,6 +191,7 @@ pub async fn get_paired_device() -> Result<Option<DeviceState>, String> {
             ssid: None,
             rssi: None,
             fw: None,
+            skin: None,
             ip,
             connected: false,
         }));
@@ -205,6 +208,7 @@ pub async fn get_paired_device() -> Result<Option<DeviceState>, String> {
         ssid: val["ssid"].as_str().map(String::from),
         rssi: val["rssi"].as_i64().map(|r| r as i32),
         fw: val["fw"].as_str().map(String::from),
+        skin: val["skin"].as_str().map(String::from),
         ip,
         connected: true,
     }))
@@ -213,6 +217,35 @@ pub async fn get_paired_device() -> Result<Option<DeviceState>, String> {
 #[tauri::command]
 pub async fn unpair_pal() -> Result<(), String> {
     clear_device_credentials()
+}
+
+#[tauri::command]
+pub async fn set_device_skin(skin: String) -> Result<(), String> {
+    let (ip, token) = get_saved_device_credentials()
+        .ok_or_else(|| "No CubiPal is currently paired.".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let url = format!("http://{}/api/skin", ip);
+    let params = [("id", skin.as_str())];
+
+    let res = client
+        .post(&url)
+        .header("X-Pet", "1")
+        .header("Authorization", format!("Bearer {}", token))
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach CubiPal: {}", e))?;
+
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Device returned HTTP {}", res.status()))
+    }
 }
 
 #[tauri::command]
