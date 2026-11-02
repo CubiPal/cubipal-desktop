@@ -30,6 +30,7 @@ pub fn run() {
             device::pair_pal,
             device::get_paired_device,
             device::unpair_pal,
+            device::set_device_skin,
             device::start_device_timer,
             calendar::connect_google_account,
             calendar::disconnect_google_account,
