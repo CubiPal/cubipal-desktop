@@ -61,6 +61,7 @@ interface FirmwareUpdateInfo {
   latest_version: string;
   current_version: string;
   download_url: string | null;
+  sha256: string | null;
   release_notes: string | null;
 }
 
@@ -72,6 +73,7 @@ interface OtaProgress {
 
 let currentDeviceIp: string | null = null;
 let activeFirmwareUrl: string | null = null;
+let activeFirmwareSha256: string | null = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
@@ -698,10 +700,11 @@ async function checkFirmwareUpdate() {
     const info = await invoke<FirmwareUpdateInfo>("check_firmware_update");
     if (info && info.available && info.download_url) {
       activeFirmwareUrl = info.download_url;
+      activeFirmwareSha256 = info.sha256;
       const titleEl = document.getElementById("ota-title");
       const descEl = document.getElementById("ota-desc");
       if (titleEl) titleEl.textContent = `Firmware v${info.latest_version} Available`;
-      if (descEl) descEl.textContent = `Your Pal is running v${info.current_version}. Update directly over Wi-Fi.`;
+      if (descEl) descEl.textContent = `Your Pal is running v${info.current_version}. Update directly over Wi-Fi (SHA-256 verified).`;
       otaCard.classList.remove("hidden");
     } else {
       otaCard.classList.add("hidden");
@@ -722,7 +725,7 @@ function setupOta() {
       if (!activeFirmwareUrl) return;
       if (
         !confirm(
-          "Install firmware update on your CubiPal now?\n\nYour Pal will flash the update over Wi-Fi and restart automatically."
+          "Install firmware update on your CubiPal now?\n\nYour Pal will verify the SHA-256 signature, flash the update over Wi-Fi, and restart automatically.\n\nNote: Updates pause automatically during active calendar meetings or focus timers."
         )
       ) {
         return;
@@ -732,9 +735,13 @@ function setupOta() {
       if (progressBox) progressBox.classList.remove("hidden");
 
       try {
-        await invoke("install_firmware_update", { downloadUrl: activeFirmwareUrl });
-      } catch (err) {
-        alert("Firmware update failed: " + err);
+        await invoke("install_firmware_update", {
+          downloadUrl: activeFirmwareUrl,
+          expectedSha256: activeFirmwareSha256,
+          force: false,
+        });
+      } catch (err: any) {
+        alert(err);
         btnInstall.disabled = false;
         btnInstall.textContent = "Retry Update";
       }
