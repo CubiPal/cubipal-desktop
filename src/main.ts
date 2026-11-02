@@ -46,6 +46,13 @@ interface CalendarSyncSettings {
   skip_tentative: boolean;
 }
 
+interface CalendarSyncConfig {
+  private_mode: boolean;
+  skip_all_day: boolean;
+  skip_tentative: boolean;
+  leadTimeMin: number;
+}
+
 interface CalendarEvent {
   id: string;
   title: string;
@@ -87,6 +94,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Load initial paired device status and calendars
   await refreshDeviceStatus();
   await refreshConnectedAccounts();
+  await loadCalendarSyncConfig();
   await syncAndPreviewEvents();
 
   // Poll state every 15 seconds
@@ -530,6 +538,43 @@ function getSelectedLeadTime(): number {
   return selected ? parseInt(selected.value, 10) || 5 : 5;
 }
 
+async function loadCalendarSyncConfig() {
+  try {
+    const config = await invoke<CalendarSyncConfig>("get_calendar_sync_config");
+    const togglePrivate = document.getElementById("toggle-private-mode") as HTMLInputElement | null;
+    const toggleAllDay = document.getElementById("toggle-skip-allday") as HTMLInputElement | null;
+    const toggleTentative = document.getElementById("toggle-skip-tentative") as HTMLInputElement | null;
+
+    if (togglePrivate) togglePrivate.checked = config.private_mode;
+    if (toggleAllDay) toggleAllDay.checked = config.skip_all_day;
+    if (toggleTentative) toggleTentative.checked = config.skip_tentative;
+
+    const leadRadio = document.querySelector<HTMLInputElement>(`input[name="lead-time"][value="${config.leadTimeMin}"]`);
+    if (leadRadio) leadRadio.checked = true;
+  } catch (err) {
+    console.warn("Failed to load sync config:", err);
+  }
+}
+
+async function persistCurrentSyncConfig() {
+  const togglePrivate = document.getElementById("toggle-private-mode") as HTMLInputElement | null;
+  const toggleAllDay = document.getElementById("toggle-skip-allday") as HTMLInputElement | null;
+  const toggleTentative = document.getElementById("toggle-skip-tentative") as HTMLInputElement | null;
+
+  const config: CalendarSyncConfig = {
+    private_mode: togglePrivate ? togglePrivate.checked : false,
+    skip_all_day: toggleAllDay ? toggleAllDay.checked : true,
+    skip_tentative: toggleTentative ? toggleTentative.checked : true,
+    leadTimeMin: getSelectedLeadTime(),
+  };
+
+  try {
+    await invoke("save_calendar_sync_config", { config });
+  } catch (err) {
+    console.error("Failed to save sync config:", err);
+  }
+}
+
 function setupRemindersTab() {
   const btnTestChime = document.getElementById("btn-test-chime");
   if (btnTestChime) {
@@ -547,11 +592,66 @@ function setupRemindersTab() {
     });
   }
 
+  // Auto-persist and re-sync whenever reminder settings change
   document.querySelectorAll<HTMLInputElement>('input[name="lead-time"]').forEach((radio) => {
-    radio.addEventListener("change", () => {
+    radio.addEventListener("change", async () => {
+      await persistCurrentSyncConfig();
       syncAndPreviewEvents();
     });
   });
+
+  const togglePrivate = document.getElementById("toggle-private-mode");
+  const toggleAllDay = document.getElementById("toggle-skip-allday");
+  const toggleTentative = document.getElementById("toggle-skip-tentative");
+
+  [togglePrivate, toggleAllDay, toggleTentative].forEach((el) => {
+    if (el) {
+      el.addEventListener("change", async () => {
+        await persistCurrentSyncConfig();
+        syncAndPreviewEvents();
+      });
+    }
+  });
+}
+
+function renderEventsPreview(events: CalendarEvent[]) {
+  const previewContainer = document.getElementById("calendar-events-preview");
+  if (!previewContainer) return;
+
+  if (events.length === 0) {
+    previewContainer.innerHTML = `<p class="text-muted text-xs py-2">No upcoming meetings found for the selected filters.</p>`;
+  } else {
+    previewContainer.innerHTML = "";
+    events.slice(0, 10).forEach((evt) => {
+      const row = document.createElement("div");
+      row.className = "event-row";
+
+      const badgeClass =
+        evt.source === "google"
+          ? "badge-google"
+          : evt.source === "microsoft"
+          ? "badge-microsoft"
+          : "badge-ics";
+
+      const sourceLabel =
+        evt.source === "google"
+          ? "Google"
+          : evt.source === "microsoft"
+          ? "Outlook"
+          : "ICS";
+
+      const timeStr = formatEventTime(evt.start, evt.end);
+
+      row.innerHTML = `
+        <div class="event-details">
+          <strong>${escapeHtml(evt.title)}</strong>
+          <span class="event-time">${timeStr}</span>
+        </div>
+        <span class="event-badge ${badgeClass}">${sourceLabel}</span>
+      `;
+      previewContainer.appendChild(row);
+    });
+  }
 }
 
 async function syncAndPreviewEvents() {
@@ -577,50 +677,10 @@ async function syncAndPreviewEvents() {
 
     const events = await invoke<CalendarEvent[]>("sync_calendar_events", { settings });
 
-    // Push next events to paired CubiPal (KAN-33)
-    try {
-      await invoke("push_events_to_device", {
-        events,
-        leadTimeMin: getSelectedLeadTime(),
-      });
-    } catch (pushErr) {
-      console.warn("Event push to paired CubiPal failed or device offline:", pushErr);
-    }
+    // Trigger immediate background sync & push to paired CubiPal (KAN-33)
+    await invoke("trigger_calendar_sync");
 
-    if (events.length === 0) {
-      previewContainer.innerHTML = `<p class="text-muted text-xs py-2">No upcoming meetings found for the selected filters.</p>`;
-    } else {
-      previewContainer.innerHTML = "";
-      events.slice(0, 10).forEach((evt) => {
-        const row = document.createElement("div");
-        row.className = "event-row";
-
-        const badgeClass =
-          evt.source === "google"
-            ? "badge-google"
-            : evt.source === "microsoft"
-            ? "badge-microsoft"
-            : "badge-ics";
-
-        const sourceLabel =
-          evt.source === "google"
-            ? "Google"
-            : evt.source === "microsoft"
-            ? "Outlook"
-            : "ICS";
-
-        const timeStr = formatEventTime(evt.start, evt.end);
-
-        row.innerHTML = `
-          <div class="event-details">
-            <strong>${escapeHtml(evt.title)}</strong>
-            <span class="event-time">${timeStr}</span>
-          </div>
-          <span class="event-badge ${badgeClass}">${sourceLabel}</span>
-        `;
-        previewContainer.appendChild(row);
-      });
-    }
+    renderEventsPreview(events);
   } catch (err) {
     previewContainer.innerHTML = `<p class="text-danger text-xs py-2">Sync failed: ${escapeHtml(String(err))}</p>`;
   } finally {
@@ -681,6 +741,10 @@ async function setupTrayListeners() {
     } catch (e) {
       alert("Failed to start timer: " + e);
     }
+  });
+
+  await listen<CalendarEvent[]>("calendar-events-updated", (event) => {
+    renderEventsPreview(event.payload);
   });
 
   await listen<number>("snooze-alerts", () => {

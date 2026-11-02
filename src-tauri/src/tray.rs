@@ -1,12 +1,43 @@
+use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager,
 };
 
+pub struct TrayMenuItems {
+    pub status: MenuItem<tauri::Wry>,
+    pub next_event: MenuItem<tauri::Wry>,
+}
+
+pub static TRAY_ITEMS: Mutex<Option<TrayMenuItems>> = Mutex::new(None);
+
+pub fn update_tray_status(text: &str) {
+    if let Ok(guard) = TRAY_ITEMS.lock() {
+        if let Some(items) = guard.as_ref() {
+            let _ = items.status.set_text(text);
+        }
+    }
+}
+
+pub fn update_tray_next_event(text: &str) {
+    if let Ok(guard) = TRAY_ITEMS.lock() {
+        if let Some(items) = guard.as_ref() {
+            let _ = items.next_event.set_text(text);
+        }
+    }
+}
+
 pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let status_item = MenuItem::with_id(app, "status", "⚪ CubiPal — Offline", false, None::<&str>)?;
     let next_event_item = MenuItem::with_id(app, "next_event", "Next: No upcoming events", false, None::<&str>)?;
+
+    if let Ok(mut guard) = TRAY_ITEMS.lock() {
+        *guard = Some(TrayMenuItems {
+            status: status_item.clone(),
+            next_event: next_event_item.clone(),
+        });
+    }
 
     // Focus Timer Submenu (presets: 30m, 60m, custom, cancel)
     let timer_30 = MenuItem::with_id(app, "timer_30", "30 min Focus", true, None::<&str>)?;
@@ -72,6 +103,7 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = open::that("https://github.com/houndman1017/cubipal-desktop/releases");
                 }
                 "sync_now" => {
+                    crate::calendar::trigger_immediate_sync();
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.emit("sync-now", ());
                     }
