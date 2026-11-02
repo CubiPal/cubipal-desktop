@@ -5,9 +5,54 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      test_tag:
+        description: "Release tag (e.g. v0.1.0-test)"
+        required: false
+        default: ""
 
 jobs:
+  create-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+      tag_name: ${{ steps.get-tag.outputs.tag }}
+    steps:
+      - name: Determine tag name
+        id: get-tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.test_tag }}"
+            if [ -z "$TAG" ]; then
+              TAG="v0.1.0-test.${{ github.run_number }}"
+            fi
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ steps.get-tag.outputs.tag }}';
+            const isPush = context.eventName === 'push';
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `CubiPal Companion ${tag}`,
+              body: `### CubiPal Desktop Companion ${tag}\n\nDesk companion tray app for meeting countdowns and focus timers over local Wi-Fi.\n\n#### Downloads\n- **Windows:** Download \`.msi\` or \`.exe\` installer below.\n- **macOS:** Download \`.dmg\` installer below.\n\n*Note: Binaries in v1 are unsigned. Follow the included instructions to bypass standard OS warnings on first run.*`,
+              draft: true,
+              prerelease: !isPush
+            });
+            return release.data.id;
+
   build-release:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -16,9 +61,11 @@ jobs:
         include:
           - platform: "windows-latest"
             target: "x86_64-pc-windows-msvc"
+          - platform: "windows-latest"
+            target: "aarch64-pc-windows-msvc"
           - platform: "macos-latest"
             target: "aarch64-apple-darwin"
-          - platform: "macos-13"
+          - platform: "macos-latest"
             target: "x86_64-apple-darwin"
 
     runs-on: ${{ matrix.platform }}
@@ -37,6 +84,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -44,22 +96,60 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "CubiPal Companion ${{ github.ref_name }}"
-          releaseBody: |
-            ### CubiPal Desktop Companion ${{ github.ref_name }}
-            
-            Desk companion tray app for meeting countdowns and focus timers over local Wi-Fi.
-            
-            #### Downloads
-            - **Windows (x64):** Download `.msi` or `.exe` installer below.
-            - **macOS (Apple Silicon & Intel):** Download `.dmg` installer below.
-            
-            *Note: Binaries in v1 are unsigned. Follow the included instructions to bypass standard OS warnings on first run.*
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: true
           args: --target ${{ matrix.target }}
 
+  link-firmware:
+    needs: create-release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch and attach firmware assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p firmware_dl
+          cd firmware_dl
+          echo "Checking houndman1017/CubiPal for firmware release assets..."
+          if gh release list --repo houndman1017/CubiPal --limit 1 | grep -q .; then
+            LATEST_FW_TAG=$(gh release list --repo houndman1017/CubiPal --limit 1 | awk '{print $1}')
+            echo "Found firmware release: $LATEST_FW_TAG"
+            gh release download $LATEST_FW_TAG --repo houndman1017/CubiPal --pattern "*.bin*" || true
+            for bin in *.bin; do
+              if [ -f "$bin" ]; then
+                if [ ! -f "$bin.sha256" ] && [ ! -f "${bin%.bin}.sha256" ]; then
+                  sha256sum "$bin" | awk '{print $1}' > "$bin.sha256"
+                fi
+                gh release upload ${{ needs.create-release.outputs.tag_name }} "$bin"* --repo ${{ github.repository }} --clobber
+              fi
+            done
+          else
+            echo "::warning ::No firmware releases found in houndman1017/CubiPal. Skipping firmware linking."
+          fi
+
+  publish-release:
+    needs: [create-release, build-release, link-firmware]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish Release (if tag push)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            echo "Publishing release ${{ needs.create-release.outputs.tag_name }}..."
+            gh release edit ${{ needs.create-release.outputs.tag_name }} --draft=false --repo ${{ github.repository }}
+          else
+            echo "Workflow run was triggered manually. Leaving release as draft for inspection."
+          fi

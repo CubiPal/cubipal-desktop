@@ -80,30 +80,26 @@ pub fn parse_ics_content(raw: &str) -> Result<Vec<CalendarEvent>, String> {
                 });
             }
             in_event = false;
-        } else if in_event {
-            if let Some(pos) = trimmed.find(':') {
-                let (key_part, val_part) = trimmed.split_at(pos);
-                let val = &val_part[1..];
-                let key_upper = key_part.to_uppercase();
+        } else if in_event && let Some(pos) = trimmed.find(':') {
+            let (key_part, val_part) = trimmed.split_at(pos);
+            let val = &val_part[1..];
+            let key_upper = key_part.to_uppercase();
 
-                if key_upper == "UID" {
-                    current_id = val.to_string();
-                } else if key_upper.starts_with("SUMMARY") {
-                    current_title = unescape_ics_text(val);
-                } else if key_upper.starts_with("DTSTART") {
-                    if let Some((epoch, all_day)) = parse_ics_datetime(val) {
-                        current_start = epoch;
-                        is_all_day = all_day;
-                    }
-                } else if key_upper.starts_with("DTEND") {
-                    if let Some((epoch, _)) = parse_ics_datetime(val) {
-                        current_end = epoch;
-                    }
-                } else if key_upper.starts_with("STATUS") {
-                    if val.eq_ignore_ascii_case("TENTATIVE") {
-                        is_tentative = true;
-                    }
+            if key_upper == "UID" {
+                current_id = val.to_string();
+            } else if key_upper.starts_with("SUMMARY") {
+                current_title = unescape_ics_text(val);
+            } else if key_upper.starts_with("DTSTART") {
+                if let Some((epoch, all_day)) = parse_ics_datetime(val) {
+                    current_start = epoch;
+                    is_all_day = all_day;
                 }
+            } else if key_upper.starts_with("DTEND") {
+                if let Some((epoch, _)) = parse_ics_datetime(val) {
+                    current_end = epoch;
+                }
+            } else if key_upper.starts_with("STATUS") && val.eq_ignore_ascii_case("TENTATIVE") {
+                is_tentative = true;
             }
         }
     }
@@ -115,27 +111,26 @@ fn parse_ics_datetime(val: &str) -> Option<(i64, bool)> {
     let clean = val.trim();
 
     // Case 1: UTC datetime ending in Z: "20261101T150000Z"
-    if clean.ends_with('Z') {
-        if let Ok(dt) = NaiveDateTime::parse_from_str(&clean[..clean.len() - 1], "%Y%m%dT%H%M%S") {
-            return Some((Utc.from_utc_datetime(&dt).timestamp(), false));
-        }
+    if clean.ends_with('Z')
+        && let Ok(dt) = NaiveDateTime::parse_from_str(&clean[..clean.len() - 1], "%Y%m%dT%H%M%S")
+    {
+        return Some((Utc.from_utc_datetime(&dt).timestamp(), false));
     }
 
     // Case 2: Local datetime: "20261101T150000"
-    if clean.contains('T') {
-        if let Ok(dt) = NaiveDateTime::parse_from_str(clean, "%Y%m%dT%H%M%S") {
-            // Interpret as UTC timestamp fallback
-            return Some((Utc.from_utc_datetime(&dt).timestamp(), false));
-        }
+    if clean.contains('T')
+        && let Ok(dt) = NaiveDateTime::parse_from_str(clean, "%Y%m%dT%H%M%S")
+    {
+        // Interpret as UTC timestamp fallback
+        return Some((Utc.from_utc_datetime(&dt).timestamp(), false));
     }
 
     // Case 3: Date only (all day): "20261101"
-    if clean.len() == 8 {
-        if let Ok(d) = NaiveDate::parse_from_str(clean, "%Y%m%d") {
-            if let Some(dt) = d.and_hms_opt(0, 0, 0) {
-                return Some((Utc.from_utc_datetime(&dt).timestamp(), true));
-            }
-        }
+    if clean.len() == 8
+        && let Ok(d) = NaiveDate::parse_from_str(clean, "%Y%m%d")
+        && let Some(dt) = d.and_hms_opt(0, 0, 0)
+    {
+        return Some((Utc.from_utc_datetime(&dt).timestamp(), true));
     }
 
     None
@@ -148,4 +143,3 @@ fn unescape_ics_text(val: &str) -> String {
         .replace("\\;", ";")
         .replace("\\\\", "\\")
 }
-
