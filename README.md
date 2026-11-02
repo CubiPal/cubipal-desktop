@@ -28,6 +28,28 @@ Full technical design specifications are available in the [CubiPal Tech Design D
 
 ---
 
+## Releases & Auto-Updates
+
+The companion app features automated multi-platform release CI and in-app auto-updating powered by Tauri v2:
+
+- **Multi-Platform Releases:** Every `v*` tag trigger builds signed installers for Windows (x64, ARM64) and macOS (Apple Silicon, Intel).
+- **Auto-Updater:** The desktop app checks GitHub Releases for verified signed update manifests (`latest.json`) on startup and daily, prompting before installing updates.
+- **Safety Pause:** Updates pause automatically if a focus timer or meeting countdown is active on your desk pet to avoid interruptions.
+- **Firmware Asset Linking:** GitHub Actions release workflows automatically attach compatible firmware binaries (`.bin` and `.sha256`) from `CubiPal` releases for OTA flashing.
+
+### Creating a New Release
+
+```bash
+# 1. Update version across package.json, src-tauri/Cargo.toml, and src-tauri/tauri.conf.json
+# 2. Commit and tag:
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+*Note on code signing: Early v1 releases are unsigned. Follow the included instructions on macOS (Control-Click -> Open) or Windows (More Info -> Run anyway) on first launch.*
+
+---
+
 ## Development Setup
 
 ### Prerequisites

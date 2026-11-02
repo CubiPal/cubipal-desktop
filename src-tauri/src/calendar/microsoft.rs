@@ -1,5 +1,5 @@
-use super::oauth::{generate_pkce, LoopbackServer};
 use super::CalendarEvent;
+use super::oauth::{LoopbackServer, generate_pkce};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::time::Duration;
@@ -187,12 +187,14 @@ pub async fn fetch_microsoft_events(
                 .start
                 .as_ref()
                 .and_then(|s| s.date_time.as_ref())
-                .and_then(|dt| DateTime::parse_from_rfc3339(dt).ok().or_else(|| {
-                    // Try parsing without timezone if sent as naive UTC
-                    chrono::NaiveDateTime::parse_from_str(dt, "%Y-%m-%dT%H:%M:%S")
-                        .ok()
-                        .map(|n| n.and_utc().fixed_offset())
-                }))
+                .and_then(|dt| {
+                    DateTime::parse_from_rfc3339(dt).ok().or_else(|| {
+                        // Try parsing without timezone if sent as naive UTC
+                        chrono::NaiveDateTime::parse_from_str(dt, "%Y-%m-%dT%H:%M:%S")
+                            .ok()
+                            .map(|n| n.and_utc().fixed_offset())
+                    })
+                })
                 .map(|d| d.timestamp())
                 .unwrap_or(0);
 
@@ -200,11 +202,13 @@ pub async fn fetch_microsoft_events(
                 .end
                 .as_ref()
                 .and_then(|e| e.date_time.as_ref())
-                .and_then(|dt| DateTime::parse_from_rfc3339(dt).ok().or_else(|| {
-                    chrono::NaiveDateTime::parse_from_str(dt, "%Y-%m-%dT%H:%M:%S")
-                        .ok()
-                        .map(|n| n.and_utc().fixed_offset())
-                }))
+                .and_then(|dt| {
+                    DateTime::parse_from_rfc3339(dt).ok().or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(dt, "%Y-%m-%dT%H:%M:%S")
+                            .ok()
+                            .map(|n| n.and_utc().fixed_offset())
+                    })
+                })
                 .map(|d| d.timestamp())
                 .unwrap_or(start_epoch + 1800);
 
