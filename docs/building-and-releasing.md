@@ -1,6 +1,6 @@
 # Building and Releasing CubiPal Desktop Companion
 
-This guide documents the build process, release pipeline, and installation instructions for the **CubiPal Desktop Companion App** ([houndman1017/cubipal-desktop](https://github.com/houndman1017/cubipal-desktop)).
+This guide documents the build process, release pipeline, and installation instructions for the **CubiPal Desktop Companion App** ([CubiPal/cubipal-desktop](https://github.com/CubiPal/cubipal-desktop)).
 
 ---
 
@@ -56,7 +56,7 @@ GitHub Actions automatically runs a 3-platform matrix build:
 - **macOS (Apple Silicon - aarch64)**: `macos-latest` producing `.dmg`
 - **macOS (Intel - x86_64)**: `macos-13` producing `.dmg`
 
-Once all jobs complete, `tauri-action` publishes the binaries and SHA256 checksums to [GitHub Releases](https://github.com/houndman1017/cubipal-desktop/releases).
+Once all jobs complete, `tauri-action` publishes the binaries and SHA256 checksums to [GitHub Releases](https://github.com/CubiPal/cubipal-desktop/releases).
 
 ---
 

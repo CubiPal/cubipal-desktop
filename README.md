@@ -24,7 +24,7 @@ A lightweight tray application for Windows and macOS that connects your digital 
 - **Local Discovery:** mDNS (`_cubipal._tcp`) service discovery with manual IP fallback
 - **Cross-Platform:** Windows 10/11 (x64, ARM64) and macOS 13+ (Apple Silicon, Intel)
 
-Full technical design specifications are available in the [CubiPal Tech Design Document](https://github.com/houndman1017/CubiPal/blob/main/docs/desktop-app-tech-design.md).
+Full technical design specifications are available in the [CubiPal Tech Design Document](https://github.com/CubiPal/CubiPal/blob/main/docs/desktop-app-tech-design.md).
 
 ---
 
@@ -64,7 +64,7 @@ git push origin v0.2.0
 
 ```bash
 # Clone the repository
-git clone https://github.com/houndman1017/cubipal-desktop.git
+git clone https://github.com/CubiPal/cubipal-desktop.git
 cd cubipal-desktop
 
 # Install frontend dependencies

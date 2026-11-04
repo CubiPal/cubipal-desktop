@@ -16,7 +16,7 @@
    * **Client Secret:** *(Secured in GitHub Secrets `GOOGLE_CLIENT_SECRET`)*
    * **OAuth Scope:** `https://www.googleapis.com/auth/calendar.readonly`
 2. **Repository & CI Integration:**
-   * Set GitHub Actions Secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in [`houndman1017/cubipal-desktop`](https://github.com/houndman1017/cubipal-desktop).
+   * Set GitHub Actions Secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in [`CubiPal/cubipal-desktop`](https://github.com/CubiPal/cubipal-desktop).
    * Updated `GOOGLE_DEFAULT_CLIENT_ID` constant in `src-tauri/src/calendar/google.rs`.
    * Updated `.github/workflows/release.yml` build environment.
 3. **Verification Materials Prepared:**

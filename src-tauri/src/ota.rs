@@ -58,8 +58,8 @@ pub async fn check_firmware_update() -> Result<FirmwareUpdateInfo, String> {
 
     // Check official CubiPal firmware repo first, fallback to desktop repo releases
     let endpoints = [
-        "https://api.github.com/repos/houndman1017/CubiPal/releases/latest",
-        "https://api.github.com/repos/houndman1017/cubipal-desktop/releases/latest",
+        "https://api.github.com/repos/CubiPal/CubiPal/releases/latest",
+        "https://api.github.com/repos/CubiPal/cubipal-desktop/releases/latest",
     ];
 
     let mut release_opt: Option<GithubRelease> = None;

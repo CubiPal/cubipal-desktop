@@ -120,11 +120,11 @@ jobs:
         run: |
           mkdir -p firmware_dl
           cd firmware_dl
-          echo "Checking houndman1017/CubiPal for firmware release assets..."
-          LATEST_FW_TAG=$(gh release view --repo houndman1017/CubiPal --json tagName -q .tagName 2>/dev/null || true)
+          echo "Checking CubiPal/CubiPal for firmware release assets..."
+          LATEST_FW_TAG=$(gh release view --repo CubiPal/CubiPal --json tagName -q .tagName 2>/dev/null || true)
           if [ -n "$LATEST_FW_TAG" ]; then
             echo "Found firmware release: $LATEST_FW_TAG"
-            gh release download $LATEST_FW_TAG --repo houndman1017/CubiPal --pattern "*.bin*" || true
+            gh release download $LATEST_FW_TAG --repo CubiPal/CubiPal --pattern "*.bin*" || true
             for bin in *.bin; do
               if [ -f "$bin" ]; then
                 if [ ! -f "$bin.sha256" ] && [ ! -f "${bin%.bin}.sha256" ]; then
@@ -134,7 +134,7 @@ jobs:
               fi
             done
           else
-            echo "::warning ::No firmware releases found in houndman1017/CubiPal. Skipping firmware linking."
+            echo "::warning ::No firmware releases found in CubiPal/CubiPal. Skipping firmware linking."
           fi
 
   publish-release:
