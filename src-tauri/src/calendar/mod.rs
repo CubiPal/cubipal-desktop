@@ -95,8 +95,9 @@ pub async fn set_ics_url(url: String) -> Result<(), String> {
         return disconnect_ics().await;
     }
 
+    let normalized = ics::normalize_feed_url(clean)?;
     let entry = Entry::new(KEYRING_SERVICE, KEYRING_ICS_URL).map_err(|e| e.to_string())?;
-    entry.set_password(clean).map_err(|e| e.to_string())?;
+    entry.set_password(&normalized).map_err(|e| e.to_string())?;
     Ok(())
 }
 
