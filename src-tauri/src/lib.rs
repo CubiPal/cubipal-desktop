@@ -1,6 +1,7 @@
 mod calendar;
 mod device;
 mod ota;
+mod settings;
 mod tray;
 
 use std::time::Duration;
@@ -42,13 +43,17 @@ async fn install_desktop_update(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks for a new app version 30 s after startup and then every 24 h,
+/// unless "Automatic Updates" is off (then nothing is fetched at all; the
+/// tray's "Check for Updates..." still works).
 fn start_update_checker(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Startup delay: wait 30s before first update check
         tokio::time::sleep(Duration::from_secs(30)).await;
 
         loop {
-            if let Ok(updater) = app.updater()
+            if settings::load(&app).auto_update
+                && let Ok(updater) = app.updater()
                 && let Ok(Some(update)) = updater.check().await
             {
                 let _ = app.emit(
@@ -72,6 +77,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             tray::create_tray(app.handle())?;
             calendar::start_background_sync(app.handle().clone());
@@ -88,6 +97,9 @@ pub fn run() {
             show_preferences_window,
             check_desktop_update,
             install_desktop_update,
+            settings::get_general_settings,
+            settings::set_autostart,
+            settings::set_auto_update,
             device::scan_for_pals,
             device::pair_pal,
             device::get_paired_device,

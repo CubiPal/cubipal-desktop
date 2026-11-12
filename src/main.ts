@@ -85,6 +85,12 @@ interface DesktopUpdateInfo {
   body?: string;
 }
 
+interface GeneralSettings {
+  autostart: boolean;
+  auto_update: boolean;
+  app_version: string;
+}
+
 interface OtaProgress {
   stage: string;
   percent: number;
@@ -107,6 +113,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupRemindersTab();
   setupTrayListeners();
   setupOta();
+  setupGeneralTab();
 
   // Load initial paired device status and calendars
   await refreshDeviceStatus();
@@ -833,14 +840,56 @@ async function setupTrayListeners() {
     }
   });
 
+  // The backend only runs the background check while Automatic Updates is on.
   await listen<DesktopUpdateInfo>("desktop-update-available", async (event) => {
-    const autoUpdate = document.getElementById("toggle-autoupdate") as HTMLInputElement | null;
-    if (autoUpdate && !autoUpdate.checked) return;
     await offerDesktopUpdate(event.payload, false);
   });
 
   await listen<number>("snooze-alerts", () => {
     alert("Meeting reminders snoozed for 1 hour on your CubiPal.");
+  });
+}
+
+// --------------------------------------------------------------------------
+// General tab: Launch at Startup and Automatic Updates (TST-14)
+// --------------------------------------------------------------------------
+
+async function setupGeneralTab() {
+  const autostart = document.getElementById("toggle-autostart") as HTMLInputElement | null;
+  const autoUpdate = document.getElementById("toggle-autoupdate") as HTMLInputElement | null;
+  const versionEl = document.getElementById("app-version");
+
+  try {
+    const s = await invoke<GeneralSettings>("get_general_settings");
+    if (autostart) autostart.checked = s.autostart;
+    if (autoUpdate) autoUpdate.checked = s.auto_update;
+    if (versionEl) versionEl.textContent = `Version ${s.app_version}`;
+  } catch (err) {
+    console.warn("Failed to load general settings:", err);
+  }
+
+  autostart?.addEventListener("change", async () => {
+    const wanted = autostart.checked;
+    autostart.disabled = true;
+    try {
+      // Show what the OS actually has now.
+      autostart.checked = await invoke<boolean>("set_autostart", { enabled: wanted });
+    } catch (err) {
+      autostart.checked = !wanted;
+      alert(String(err));
+    } finally {
+      autostart.disabled = false;
+    }
+  });
+
+  autoUpdate?.addEventListener("change", async () => {
+    const wanted = autoUpdate.checked;
+    try {
+      await invoke("set_auto_update", { enabled: wanted });
+    } catch (err) {
+      autoUpdate.checked = !wanted;
+      alert(String(err));
+    }
   });
 }
 
