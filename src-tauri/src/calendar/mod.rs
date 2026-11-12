@@ -282,7 +282,7 @@ pub async fn test_device_chime() -> Result<(), String> {
         .post(format!("http://{}/api/message", ip))
         .header("Authorization", format!("Bearer {}", token))
         .header("X-Pet", "1")
-        .form(&[("m", "Meeting Chime Test")])
+        .form(&[("text", "Meeting Chime Test")])
         .send()
         .await
         .map_err(|e| format!("Failed to reach CubiPal: {}", e))?;
