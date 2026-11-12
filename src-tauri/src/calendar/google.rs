@@ -1,12 +1,64 @@
-use super::CalendarEvent;
 use super::oauth::{LoopbackServer, generate_pkce};
+use super::{CalendarEvent, ProviderError, is_revoked_grant};
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
 use std::time::Duration;
 
-// Default client ID configured under KAN-38 (overridable via environment or settings)
-pub const GOOGLE_DEFAULT_CLIENT_ID: &str =
+// Default client ID configured under KAN-38. A build can override it with the
+// GOOGLE_CLIENT_ID environment variable (the release workflow exports it).
+const GOOGLE_DEFAULT_CLIENT_ID: &str =
     "772128439990-pgutm29ngflnbdplo9khmblprs7c0m83.apps.googleusercontent.com";
+
+/// The OAuth client used for Google sign-in and token refresh.
+pub struct OAuthClient {
+    pub id: String,
+    /// Google "Desktop app" OAuth clients must send their client secret to
+    /// the token endpoint, even with PKCE. For installed apps Google treats
+    /// this value as non-confidential (it ships inside every copy of the
+    /// app), so embedding it at build time is the documented practice; PKCE
+    /// and the loopback redirect are what protect the flow.
+    pub secret: Option<String>,
+}
+
+impl OAuthClient {
+    /// The client this build was made with: GOOGLE_CLIENT_ID and
+    /// GOOGLE_CLIENT_SECRET from the build environment, when set.
+    pub fn built_in() -> Self {
+        let env_id = option_env!("GOOGLE_CLIENT_ID")
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let secret = option_env!("GOOGLE_CLIENT_SECRET")
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        Self::from_build(env_id, secret)
+    }
+
+    fn from_build(env_id: Option<&str>, secret: Option<&str>) -> Self {
+        OAuthClient {
+            id: env_id.unwrap_or(GOOGLE_DEFAULT_CLIENT_ID).to_string(),
+            secret: secret.map(String::from),
+        }
+    }
+
+    /// A client ID typed in by the user; the built-in secret doesn't belong
+    /// to it, so none is sent.
+    pub fn custom(id: String) -> Self {
+        OAuthClient {
+            id: id.trim().to_string(),
+            secret: None,
+        }
+    }
+
+    /// Token-endpoint form fields, with the secret when there is one.
+    fn token_params<'a>(&'a self, extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        let mut params = vec![("client_id", self.id.as_str())];
+        if let Some(secret) = self.secret.as_deref() {
+            params.push(("client_secret", secret));
+        }
+        params.extend_from_slice(extra);
+        params
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -39,14 +91,14 @@ fn url_encode(input: &str) -> String {
     url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
 }
 
-pub async fn start_google_auth(client_id: &str) -> Result<(String, String), String> {
+pub async fn start_google_auth(oauth: &OAuthClient) -> Result<(String, String), String> {
     let pkce = generate_pkce();
     let server = LoopbackServer::start()?;
     let redirect_uri = server.redirect_uri();
 
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https://www.googleapis.com/auth/calendar.readonly&code_challenge={}&code_challenge_method=S256&state={}&access_type=offline&prompt=consent",
-        client_id,
+        url_encode(&oauth.id),
         url_encode(&redirect_uri),
         pkce.challenge,
         server.state
@@ -60,13 +112,12 @@ pub async fn start_google_auth(client_id: &str) -> Result<(String, String), Stri
 
     // Exchange code for tokens
     let client = reqwest::Client::new();
-    let params = [
-        ("client_id", client_id),
+    let params = oauth.token_params(&[
         ("code", &code),
         ("code_verifier", &pkce.verifier),
         ("grant_type", "authorization_code"),
         ("redirect_uri", &redirect_uri),
-    ];
+    ]);
 
     let res = client
         .post("https://oauth2.googleapis.com/token")
@@ -93,15 +144,14 @@ pub async fn start_google_auth(client_id: &str) -> Result<(String, String), Stri
 }
 
 pub async fn refresh_google_access_token(
-    client_id: &str,
+    oauth: &OAuthClient,
     refresh_token: &str,
-) -> Result<String, String> {
+) -> Result<String, ProviderError> {
     let client = reqwest::Client::new();
-    let params = [
-        ("client_id", client_id),
+    let params = oauth.token_params(&[
         ("refresh_token", refresh_token),
         ("grant_type", "refresh_token"),
-    ];
+    ]);
 
     let res = client
         .post("https://oauth2.googleapis.com/token")
@@ -110,8 +160,13 @@ pub async fn refresh_google_access_token(
         .await
         .map_err(|e| format!("Google refresh failed: {}", e))?;
 
-    if !res.status().is_success() {
-        return Err("Failed to refresh Google access token".to_string());
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        if is_revoked_grant(status.as_u16(), &body) {
+            return Err(ProviderError::Revoked);
+        }
+        return Err(format!("Failed to refresh Google access token (HTTP {})", status).into());
     }
 
     let token_resp: TokenResponse = res
@@ -123,10 +178,10 @@ pub async fn refresh_google_access_token(
 }
 
 pub async fn fetch_google_events(
-    client_id: &str,
+    oauth: &OAuthClient,
     refresh_token: &str,
-) -> Result<Vec<CalendarEvent>, String> {
-    let access_token = refresh_google_access_token(client_id, refresh_token).await?;
+) -> Result<Vec<CalendarEvent>, ProviderError> {
+    let access_token = refresh_google_access_token(oauth, refresh_token).await?;
 
     let now = Utc::now();
     let horizon = now + chrono::Duration::hours(24);
@@ -150,7 +205,7 @@ pub async fn fetch_google_events(
         .map_err(|e| format!("Google Calendar fetch failed: {}", e))?;
 
     if !res.status().is_success() {
-        return Err(format!("Google API returned HTTP {}", res.status()));
+        return Err(format!("Google API returned HTTP {}", res.status()).into());
     }
 
     let data: GoogleEventsResponse = res
@@ -230,6 +285,31 @@ mod tests {
             date_time: date_time.map(String::from),
             date: date.map(String::from),
         }
+    }
+
+    #[test]
+    fn client_secret_is_sent_only_with_the_built_in_client() {
+        let built = OAuthClient::from_build(None, Some("s3cret"));
+        assert_eq!(built.id, GOOGLE_DEFAULT_CLIENT_ID);
+        let params = built.token_params(&[("grant_type", "refresh_token")]);
+        assert_eq!(
+            params,
+            [
+                ("client_id", GOOGLE_DEFAULT_CLIENT_ID),
+                ("client_secret", "s3cret"),
+                ("grant_type", "refresh_token")
+            ]
+        );
+        let env = OAuthClient::from_build(Some("env-id"), None);
+        assert_eq!(env.id, "env-id");
+        assert!(
+            !env.token_params(&[])
+                .iter()
+                .any(|(k, _)| *k == "client_secret")
+        );
+        let custom = OAuthClient::custom(" mine ".into());
+        assert_eq!(custom.id, "mine");
+        assert!(custom.secret.is_none());
     }
 
     #[test]

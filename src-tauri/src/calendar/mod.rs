@@ -40,16 +40,42 @@ pub struct CalendarSyncSettings {
 pub struct ConnectedAccounts {
     pub google_connected: bool,
     pub microsoft_connected: bool,
+    /// False when this build has no Microsoft client ID (Outlook support
+    /// is "coming soon" in the UI).
+    pub microsoft_available: bool,
     pub ics_url: Option<String>,
 }
 
+/// Why fetching one calendar failed.
+#[derive(Debug)]
+pub enum ProviderError {
+    /// The refresh token was revoked or expired (`invalid_grant`): the
+    /// account must be connected again.
+    Revoked,
+    Failed(String),
+}
+
+impl From<String> for ProviderError {
+    fn from(s: String) -> Self {
+        ProviderError::Failed(s)
+    }
+}
+
+/// True for an OAuth token-endpoint error meaning the refresh token is dead.
+pub fn is_revoked_grant(status: u16, body: &str) -> bool {
+    status == 400 && body.contains("invalid_grant")
+}
+
+pub const MICROSOFT_COMING_SOON: &str = "Outlook / Microsoft 365 support is coming soon.";
+
 #[tauri::command]
 pub async fn connect_google_account(custom_client_id: Option<String>) -> Result<(), String> {
-    let client_id = custom_client_id
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| google::GOOGLE_DEFAULT_CLIENT_ID.to_string());
+    let client = match custom_client_id.filter(|s| !s.trim().is_empty()) {
+        Some(id) => google::OAuthClient::custom(id),
+        None => google::OAuthClient::built_in(),
+    };
 
-    let (_access, refresh) = google::start_google_auth(&client_id).await?;
+    let (_access, refresh) = google::start_google_auth(&client).await?;
 
     let entry = Entry::new(KEYRING_SERVICE, KEYRING_GOOGLE_REFRESH).map_err(|e| e.to_string())?;
     entry.set_password(&refresh).map_err(|e| e.to_string())?;
@@ -68,8 +94,10 @@ pub async fn disconnect_google_account() -> Result<(), String> {
 #[tauri::command]
 pub async fn connect_microsoft_account(custom_client_id: Option<String>) -> Result<(), String> {
     let client_id = custom_client_id
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| microsoft::MICROSOFT_DEFAULT_CLIENT_ID.to_string());
+        .map(|s| s.trim().to_string())
+        .filter(|s| microsoft::is_usable_client_id(s))
+        .or_else(|| microsoft::built_in_client_id().map(String::from))
+        .ok_or_else(|| MICROSOFT_COMING_SOON.to_string())?;
 
     let (_access, refresh) = microsoft::start_microsoft_auth(&client_id).await?;
 
@@ -126,6 +154,7 @@ pub fn get_connected_accounts() -> Result<ConnectedAccounts, String> {
     Ok(ConnectedAccounts {
         google_connected,
         microsoft_connected,
+        microsoft_available: microsoft::built_in_client_id().is_some(),
         ics_url,
     })
 }
@@ -166,20 +195,28 @@ pub async fn sync_calendar_events(
 
     // 1. Google Calendar
     if let Some(refresh) = read_secret(KEYRING_GOOGLE_REFRESH) {
-        match google::fetch_google_events(google::GOOGLE_DEFAULT_CLIENT_ID, &refresh).await {
-            Ok(events) => all_events.extend(events),
-            Err(e) => errors.push(format!("Google Calendar: {}", e)),
-        }
+        let result = google::fetch_google_events(&google::OAuthClient::built_in(), &refresh).await;
+        collect(
+            result,
+            "Google Calendar",
+            KEYRING_GOOGLE_REFRESH,
+            &mut all_events,
+            &mut errors,
+        );
     }
 
-    // 2. Microsoft 365
-    if let Some(refresh) = read_secret(KEYRING_MICROSOFT_REFRESH) {
-        match microsoft::fetch_microsoft_events(microsoft::MICROSOFT_DEFAULT_CLIENT_ID, &refresh)
-            .await
-        {
-            Ok(events) => all_events.extend(events),
-            Err(e) => errors.push(format!("Microsoft 365: {}", e)),
-        }
+    // 2. Microsoft 365 (only in builds that have a Microsoft client ID)
+    if let Some(refresh) = read_secret(KEYRING_MICROSOFT_REFRESH)
+        && let Some(client_id) = microsoft::built_in_client_id()
+    {
+        let result = microsoft::fetch_microsoft_events(client_id, &refresh).await;
+        collect(
+            result,
+            "Microsoft 365",
+            KEYRING_MICROSOFT_REFRESH,
+            &mut all_events,
+            &mut errors,
+        );
     }
 
     // 3. ICS Calendar Feed
@@ -195,6 +232,30 @@ pub async fn sync_calendar_events(
     }
 
     Ok(filter_events(all_events, &settings, Utc::now().timestamp()))
+}
+
+/// Adds one provider's events, or its error. A revoked sign-in also forgets
+/// the dead refresh token, so the Calendars tab shows "Not connected".
+fn collect(
+    result: Result<Vec<CalendarEvent>, ProviderError>,
+    name: &str,
+    keyring_user: &str,
+    all_events: &mut Vec<CalendarEvent>,
+    errors: &mut Vec<String>,
+) {
+    match result {
+        Ok(events) => all_events.extend(events),
+        Err(ProviderError::Revoked) => {
+            if let Ok(entry) = Entry::new(KEYRING_SERVICE, keyring_user) {
+                let _ = entry.delete_credential();
+            }
+            errors.push(format!(
+                "{}: sign-in expired or access was removed. Connect it again in Calendars.",
+                name
+            ));
+        }
+        Err(ProviderError::Failed(e)) => errors.push(format!("{}: {}", name, e)),
+    }
 }
 
 /// Filter pipeline: drop events that have ended, optionally all-day and
@@ -353,6 +414,16 @@ pub async fn test_device_chime() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revoked_grant_is_recognised() {
+        assert!(is_revoked_grant(
+            400,
+            r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#
+        ));
+        assert!(!is_revoked_grant(400, r#"{"error":"invalid_request"}"#));
+        assert!(!is_revoked_grant(500, "invalid_grant"));
+    }
 
     #[test]
     fn titles_are_safe_for_the_firmware_parser() {

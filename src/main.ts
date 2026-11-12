@@ -43,6 +43,7 @@ interface PairResponse {
 interface ConnectedAccounts {
   google_connected: boolean;
   microsoft_connected: boolean;
+  microsoft_available: boolean;
   ics_url: string | null;
 }
 
@@ -567,7 +568,15 @@ async function refreshConnectedAccounts() {
     const msStatus = document.getElementById("ms-status");
     const btnMs = document.getElementById("btn-connect-ms") as HTMLButtonElement | null;
     if (msStatus && btnMs) {
-      if (accs.microsoft_connected) {
+      btnMs.disabled = false;
+      if (!accs.microsoft_available && !accs.microsoft_connected) {
+        // This build has no Microsoft client ID yet (KAN-39).
+        msStatus.textContent = "Outlook / Microsoft 365 support is coming soon";
+        msStatus.className = "text-muted text-sm";
+        btnMs.textContent = "Coming Soon";
+        btnMs.className = "btn btn-secondary";
+        btnMs.disabled = true;
+      } else if (accs.microsoft_connected) {
         msStatus.textContent = "Connected via Microsoft Entra";
         msStatus.className = "text-success text-sm";
         btnMs.textContent = "Disconnect";

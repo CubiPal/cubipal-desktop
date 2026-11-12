@@ -1,11 +1,24 @@
-use super::CalendarEvent;
 use super::oauth::{LoopbackServer, generate_pkce};
+use super::{CalendarEvent, ProviderError, is_revoked_grant};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::time::Duration;
 
-// Default client ID configured under KAN-39 (overridable via settings)
-pub const MICROSOFT_DEFAULT_CLIENT_ID: &str = "00000000-0000-0000-0000-000000000000";
+/// The Entra app (KAN-39) client ID, set at build time with the
+/// MICROSOFT_CLIENT_ID environment variable. `None` when the build has none
+/// (or only the all-zero placeholder): Microsoft connect is then disabled.
+pub fn built_in_client_id() -> Option<&'static str> {
+    option_env!("MICROSOFT_CLIENT_ID")
+        .map(str::trim)
+        .filter(|s| is_usable_client_id(s))
+}
+
+/// Rejects empty and all-zero placeholder IDs.
+pub fn is_usable_client_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && id.chars().any(|c| c != '0' && c != '-')
+}
 
 #[derive(Debug, Deserialize)]
 struct MsTokenResponse {
@@ -55,7 +68,7 @@ pub async fn start_microsoft_auth(client_id: &str) -> Result<(String, String), S
 
     let auth_url = format!(
         "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id={}&redirect_uri={}&response_type=code&scope=Calendars.Read%20offline_access&code_challenge={}&code_challenge_method=S256&state={}&prompt=select_account",
-        client_id,
+        url_encode(client_id),
         url_encode(&redirect_uri),
         pkce.challenge,
         server.state
@@ -101,7 +114,7 @@ pub async fn start_microsoft_auth(client_id: &str) -> Result<(String, String), S
 pub async fn refresh_microsoft_access_token(
     client_id: &str,
     refresh_token: &str,
-) -> Result<String, String> {
+) -> Result<String, ProviderError> {
     let client = reqwest::Client::new();
     let params = [
         ("client_id", client_id),
@@ -116,8 +129,13 @@ pub async fn refresh_microsoft_access_token(
         .await
         .map_err(|e| format!("Microsoft refresh request failed: {}", e))?;
 
-    if !res.status().is_success() {
-        return Err("Failed to refresh Microsoft access token".to_string());
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        if is_revoked_grant(status.as_u16(), &body) {
+            return Err(ProviderError::Revoked);
+        }
+        return Err(format!("Failed to refresh Microsoft access token (HTTP {})", status).into());
     }
 
     let token_resp: MsTokenResponse = res
@@ -131,7 +149,7 @@ pub async fn refresh_microsoft_access_token(
 pub async fn fetch_microsoft_events(
     client_id: &str,
     refresh_token: &str,
-) -> Result<Vec<CalendarEvent>, String> {
+) -> Result<Vec<CalendarEvent>, ProviderError> {
     let access_token = refresh_microsoft_access_token(client_id, refresh_token).await?;
 
     let now = Utc::now();
@@ -157,7 +175,7 @@ pub async fn fetch_microsoft_events(
         .map_err(|e| format!("Microsoft Calendar fetch failed: {}", e))?;
 
     if !res.status().is_success() {
-        return Err(format!("Microsoft Graph returned HTTP {}", res.status()));
+        return Err(format!("Microsoft Graph returned HTTP {}", res.status()).into());
     }
 
     let data: MsCalendarViewResponse = res
@@ -234,6 +252,14 @@ fn parse_graph_datetime(dt: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholder_client_ids_are_unusable() {
+        assert!(!is_usable_client_id(""));
+        assert!(!is_usable_client_id("00000000-0000-0000-0000-000000000000"));
+        assert!(!is_usable_client_id("1234 5678"));
+        assert!(is_usable_client_id("3f1c2a9e-1b2c-4d5e-8f90-123456789abc"));
+    }
 
     #[test]
     fn parses_graph_seven_digit_fraction() {
