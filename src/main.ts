@@ -122,13 +122,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   await refreshDeviceStatus();
   await refreshConnectedAccounts();
   await loadCalendarSyncConfig();
-  await syncAndPreviewEvents();
+  // Preview only: the Rust sync engine pushes to the Pal at startup and
+  // every 5 minutes, and sends "calendar-events-updated" (KAN-33).
+  await syncAndPreviewEvents(false);
 
   // Poll state every 15 seconds
   setInterval(refreshDeviceStatus, 15000);
-
-  // Background calendar sync and event push every 5 minutes (KAN-33)
-  setInterval(syncAndPreviewEvents, 300000);
 });
 
 function setupTabs() {
@@ -151,7 +150,7 @@ function setupTabs() {
 
       if (targetTab === "calendars") {
         await refreshConnectedAccounts();
-        await syncAndPreviewEvents();
+        await syncAndPreviewEvents(false);
       }
     });
   });
@@ -471,9 +470,6 @@ function setupCalendarTab() {
   const btnMs = document.getElementById("btn-connect-ms")!;
   const btnIcs = document.getElementById("btn-connect-ics")!;
   const btnRefresh = document.getElementById("btn-refresh-calendar")!;
-  const togglePrivate = document.getElementById("toggle-private-mode")!;
-  const toggleAllDay = document.getElementById("toggle-skip-allday")!;
-  const toggleTentative = document.getElementById("toggle-skip-tentative")!;
 
   btnGoogle.addEventListener("click", async () => {
     try {
@@ -563,9 +559,10 @@ function setupCalendarTab() {
     syncAndPreviewEvents();
   });
 
-  togglePrivate.addEventListener("change", () => syncAndPreviewEvents());
-  toggleAllDay.addEventListener("change", () => syncAndPreviewEvents());
-  toggleTentative.addEventListener("change", () => syncAndPreviewEvents());
+  // The Private Mode / filter toggles are handled once, in
+  // setupRemindersTab: save first, then sync. A second listener here used to
+  // trigger a push before the new setting was saved, so the Pal could get
+  // real titles right after Private Mode was switched on.
 }
 
 async function refreshConnectedAccounts() {
@@ -670,7 +667,7 @@ async function persistCurrentSyncConfig() {
   try {
     await invoke("save_calendar_sync_config", { config });
   } catch (err) {
-    console.error("Failed to save sync config:", err);
+    alert("Couldn't save your calendar settings: " + err);
   }
 }
 
@@ -691,12 +688,15 @@ function setupRemindersTab() {
     });
   }
 
-  // Auto-persist and re-sync whenever reminder settings change
+  // Settings changes: save first (saving also starts the background push
+  // with the new settings), then refresh the preview without a second push.
+  const onSettingChanged = async () => {
+    await persistCurrentSyncConfig();
+    await syncAndPreviewEvents(false);
+  };
+
   document.querySelectorAll<HTMLInputElement>('input[name="lead-time"]').forEach((radio) => {
-    radio.addEventListener("change", async () => {
-      await persistCurrentSyncConfig();
-      syncAndPreviewEvents();
-    });
+    radio.addEventListener("change", onSettingChanged);
   });
 
   const togglePrivate = document.getElementById("toggle-private-mode");
@@ -704,12 +704,7 @@ function setupRemindersTab() {
   const toggleTentative = document.getElementById("toggle-skip-tentative");
 
   [togglePrivate, toggleAllDay, toggleTentative].forEach((el) => {
-    if (el) {
-      el.addEventListener("change", async () => {
-        await persistCurrentSyncConfig();
-        syncAndPreviewEvents();
-      });
-    }
+    el?.addEventListener("change", onSettingChanged);
   });
 }
 
@@ -753,7 +748,9 @@ function renderEventsPreview(events: CalendarEvent[]) {
   }
 }
 
-async function syncAndPreviewEvents() {
+// Fetches events for the preview. With `pushToPal` it also asks the sync
+// engine to push to the Pal now (manual "Sync Now", account changes).
+async function syncAndPreviewEvents(pushToPal = true) {
   const previewContainer = document.getElementById("calendar-events-preview");
   const btnRefresh = document.getElementById("btn-refresh-calendar") as HTMLButtonElement | null;
   if (!previewContainer) return;
@@ -775,13 +772,15 @@ async function syncAndPreviewEvents() {
     };
 
     const events = await invoke<CalendarEvent[]>("sync_calendar_events", { settings });
-
-    // Trigger immediate background sync & push to paired CubiPal (KAN-33)
-    await invoke("trigger_calendar_sync");
-
     renderEventsPreview(events);
+
+    // Push to the paired CubiPal with the saved settings (KAN-33)
+    if (pushToPal) await invoke("trigger_calendar_sync");
   } catch (err) {
-    previewContainer.innerHTML = `<p class="text-danger text-xs py-2">Sync failed: ${escapeHtml(String(err))}</p>`;
+    const p = document.createElement("p");
+    p.className = "text-danger text-xs py-2";
+    p.textContent = `Sync failed: ${err}`;
+    previewContainer.replaceChildren(p);
   } finally {
     if (btnRefresh) {
       btnRefresh.disabled = false;
@@ -844,6 +843,18 @@ async function setupTrayListeners() {
 
   await listen<CalendarEvent[]>("calendar-events-updated", (event) => {
     renderEventsPreview(event.payload);
+  });
+
+  // Background sync failures (expired sign-in, feed down): the Pal keeps
+  // its last events, and the preview says why.
+  await listen<string>("calendar-sync-error", (event) => {
+    const preview = document.getElementById("calendar-events-preview");
+    if (!preview) return;
+    const p = document.createElement("p");
+    p.className = "text-danger text-xs py-2";
+    p.textContent = `Sync failed: ${event.payload}`;
+    preview.replaceChildren(p);
+    refreshConnectedAccounts();
   });
 
   // Desktop app self-update: tray "Check for Updates..." and the daily background check.
