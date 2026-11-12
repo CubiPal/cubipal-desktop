@@ -246,30 +246,37 @@ function setupActionButtons() {
       } else {
         scanTitle.textContent = `Discovered CubiPals (${pals.length})`;
         scanList.innerHTML = "";
+        // mDNS names and TXT values come from any device on the LAN: only ever
+        // insert them as text, never as HTML.
         pals.forEach((pal) => {
           const row = document.createElement("div");
           row.className = "discovered-row";
-          row.innerHTML = `
-            <div class="discovered-info">
-              <strong>${pal.name}</strong>
-              <div class="discovered-meta">${pal.ip} &bull; Model ${pal.model} &bull; FW ${pal.fw}</div>
-            </div>
-            <button class="btn btn-primary btn-pair-pal" data-ip="${pal.ip}" data-name="${pal.name}">Pair</button>
-          `;
-          scanList.appendChild(row);
-        });
 
-        scanList.querySelectorAll<HTMLButtonElement>(".btn-pair-pal").forEach((btn) => {
-          btn.addEventListener("click", () => {
-            const ip = btn.getAttribute("data-ip")!;
-            const name = btn.getAttribute("data-name")!;
-            openPairingModal(ip, name);
-          });
+          const info = document.createElement("div");
+          info.className = "discovered-info";
+          const nameEl = document.createElement("strong");
+          nameEl.textContent = pal.name;
+          const meta = document.createElement("div");
+          meta.className = "discovered-meta";
+          meta.textContent = `${pal.ip} \u2022 Model ${pal.model} \u2022 FW ${pal.fw}`;
+          info.append(nameEl, meta);
+
+          const btn = document.createElement("button");
+          btn.className = "btn btn-primary btn-pair-pal";
+          btn.textContent = "Pair";
+          btn.setAttribute("aria-label", `Pair with ${pal.name}`);
+          btn.addEventListener("click", () => openPairingModal(pal.ip, pal.name));
+
+          row.append(info, btn);
+          scanList.appendChild(row);
         });
       }
     } catch (e) {
       scanTitle.textContent = "Scan Error";
-      scanList.innerHTML = `<p class="text-muted text-sm">${e}</p>`;
+      const msg = document.createElement("p");
+      msg.className = "text-muted text-sm";
+      msg.textContent = String(e);
+      scanList.replaceChildren(msg);
     }
   });
 
