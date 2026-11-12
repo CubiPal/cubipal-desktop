@@ -38,31 +38,49 @@ The automated release workflow is defined in [`.github/workflows/release.yml`](.
 
 ### Triggering a Release
 To create and publish a new release:
-1. Update `"version"` in both [`package.json`](../package.json) and [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json) (e.g. `0.1.0`).
+1. Update the version (e.g. `0.2.0`) in all three places, and let Cargo refresh `Cargo.lock`:
+   - [`package.json`](../package.json) (and the two matching fields at the top of `package-lock.json`)
+   - [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json)
+   - [`src-tauri/Cargo.toml`](../src-tauri/Cargo.toml)
 2. Commit and push the version bump:
    ```bash
-   git commit -am "chore: release v0.1.0"
+   git commit -am "chore: release v0.2.0"
    git push origin main
    ```
 3. Tag the commit with `v<version>` and push the tag:
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 
-### Matrix Builds
-GitHub Actions automatically runs a 3-platform matrix build:
-- **Windows (x64)**: `windows-latest` producing NSIS `.exe` and `.msi`
-- **macOS (Apple Silicon - aarch64)**: `macos-latest` producing `.dmg`
-- **macOS (Intel - x86_64)**: `macos-13` producing `.dmg`
+The workflow creates a draft release, builds every platform into it, then publishes it (tag pushes only; a manual run leaves a draft prerelease).
 
-Once all jobs complete, `tauri-action` publishes the binaries and SHA256 checksums to [GitHub Releases](https://github.com/CubiPal/cubipal-desktop/releases).
+### Matrix Builds
+GitHub Actions builds four targets:
+- **Windows x64** and **Windows ARM64** (`windows-latest`): NSIS `.exe` and `.msi`
+- **macOS Apple Silicon** and **macOS Intel** (`macos-latest`, cross-compiling the Intel build): `.dmg`
+
+`tauri-action` uploads the installers plus the signed updater artifacts and `latest.json` to the release. The in-app updater reads
+`https://github.com/CubiPal/cubipal-desktop/releases/latest/download/latest.json`.
+
+### Secrets
+| Secret | Needed | Used for |
+|---|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Yes | Signing updater artifacts (the public key is in `tauri.conf.json`) |
+| `GOOGLE_CLIENT_ID` | Optional | Overrides the built-in Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Optional, but Google sign-in needs it | Sent on Google token requests; for installed apps Google treats it as non-confidential |
+| `MICROSOFT_CLIENT_ID` | Optional | Enables Microsoft 365 / Outlook. Without it (or with the all-zero placeholder) the app shows Outlook as "coming soon" |
+
+These are read at compile time (`option_env!`), so a local `npm run tauri build` uses whatever is set in your shell.
+
+### Firmware is not part of desktop releases
+Pal firmware is released from the firmware repo and published on `https://cubipal.com/firmware/` (`latest.json` plus per-chip images). The desktop release no longer downloads or re-attaches firmware, and no `FW_RELEASE_PAT` is needed.
 
 ---
 
-## 3. First-Run Installation & OS Warnings (v1 Unsigned Binaries)
+## 3. First-Run Installation## 3. First-Run Installation & OS Warnings (Unsigned Installers)
 
-As established for v1 MVP/beta, the app binaries are distributed directly via GitHub Releases without paid Apple Developer or Microsoft Store code-signing certificates.
+For the beta, the installers are distributed through [GitHub Releases](https://github.com/CubiPal/cubipal-desktop/releases/latest) without Apple Developer or Microsoft code-signing certificates. (Updates installed from inside the app are separately signed with the Tauri updater key.)
 
 ### Windows (Microsoft Defender SmartScreen)
 1. Download `CubiPal_<version>_x64-setup.exe` or `.msi`.

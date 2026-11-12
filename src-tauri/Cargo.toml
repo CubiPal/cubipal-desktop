@@ -1,6 +1,6 @@
 [package]
 name = "cubipal-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "CubiPal Desktop Companion App"
 authors = ["CubiPal"]
 edition = "2024"
