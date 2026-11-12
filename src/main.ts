@@ -98,6 +98,8 @@ interface OtaProgress {
 }
 
 let currentDeviceIp: string | null = null;
+// The skin the Pal last reported, to roll the dropdown back if a change fails.
+let lastConfirmedSkin: string | null = null;
 let firmwareUpdateReady = false;
 // Only re-check for firmware when the Pal's version changes, or hourly (the
 // backend also caches cubipal.com/firmware/latest.json for an hour).
@@ -182,6 +184,7 @@ async function refreshDeviceStatus() {
       volumeEl.textContent = dev.muted ? "Muted" : `Level ${dev.volume ?? 3}`;
       if (skinEl) {
         skinEl.disabled = false;
+        if (dev.skin) lastConfirmedSkin = dev.skin;
         if (document.activeElement !== skinEl && dev.skin) {
           skinEl.value = dev.skin;
         }
@@ -324,12 +327,24 @@ function setupActionButtons() {
   });
 
   const skinEl = document.getElementById("spec-skin") as HTMLSelectElement | null;
+  const skinError = document.getElementById("skin-error");
   skinEl?.addEventListener("change", async () => {
     if (!skinEl.value) return;
+    const wanted = skinEl.value;
+    skinError?.classList.add("hidden");
+    skinEl.disabled = true;
     try {
-      await invoke("set_device_skin", { skin: skinEl.value });
-    } catch (e: any) {
-      console.error("Failed to update skin:", e);
+      await invoke("set_device_skin", { skin: wanted });
+      lastConfirmedSkin = wanted;
+    } catch (e) {
+      // Show why, and put the dropdown back to what the Pal really has.
+      if (lastConfirmedSkin) skinEl.value = lastConfirmedSkin;
+      if (skinError) {
+        skinError.textContent = `Couldn't change the skin: ${e}`;
+        skinError.classList.remove("hidden");
+      }
+    } finally {
+      skinEl.disabled = false;
     }
   });
 }
