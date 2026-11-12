@@ -3,6 +3,7 @@ pub mod ics;
 pub mod microsoft;
 pub mod oauth;
 pub mod sync_engine;
+mod tz;
 
 pub use sync_engine::{
     CalendarSyncConfig, get_saved_calendar_config, save_calendar_config_to_keyring,

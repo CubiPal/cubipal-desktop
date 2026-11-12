@@ -30,6 +30,8 @@ rand = "0.8"
 url = "2"
 open = "5"
 semver = "1"
+chrono-tz = "0.10"
+rrule = "0.14"
 
 [profile.release]
 codegen-units = 1
