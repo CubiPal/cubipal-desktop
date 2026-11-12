@@ -6,7 +6,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, mpsc};
 
-use super::{CalendarSyncSettings, DevicePushEvent, DevicePushPayload, KEYRING_SERVICE};
+use super::{
+    CalendarEvent, CalendarSyncSettings, DevicePushEvent, DevicePushPayload, KEYRING_SERVICE,
+};
 
 pub const KEYRING_CALENDAR_CONFIG: &str = "calendar_sync_config";
 
@@ -134,8 +136,8 @@ async fn perform_sync_cycle(
         .map(|e| DevicePushEvent::from_event(e, config.lead_time_min))
         .collect();
 
-    // 3. Update Tray Status & Upcoming Event
-    update_tray_display(&push_events);
+    // 3. Update Tray Status & Upcoming Event (full titles; the tray can show Unicode)
+    update_tray_display(&events);
 
     // 4. Push to Paired Device
     let push_result = push_events_payload(&push_events).await;
@@ -211,45 +213,99 @@ async fn push_events_payload(events: &[DevicePushEvent]) -> Result<bool, String>
     }
 }
 
-fn update_tray_display(events: &[DevicePushEvent]) {
-    if let Some(next) = events.first() {
-        let now = Utc::now().timestamp();
-        let rem_sec = next.start - now;
-        let rem_min = rem_sec / 60;
+fn update_tray_display(events: &[CalendarEvent]) {
+    let text = match events.first() {
+        Some(next) => tray_text(&next.title, next.start, next.end, Utc::now().timestamp()),
+        None => "Next: No upcoming events".to_string(),
+    };
+    crate::tray::update_tray_next_event(&text);
+}
 
-        let display_text = if now >= next.start && now < next.end {
-            let mins_left = (next.end - now) / 60;
-            format!(
-                "Now: {} ({}m left)",
-                truncate_str(&next.title, 18),
-                mins_left
-            )
-        } else if rem_min <= 0 {
-            format!("Next: {} (starting now)", truncate_str(&next.title, 18))
-        } else if rem_min < 60 {
-            format!("Next: {} (in {}m)", truncate_str(&next.title, 18), rem_min)
-        } else {
-            let hours = rem_min / 60;
-            let mins = rem_min % 60;
-            format!(
-                "Next: {} (in {}h {}m)",
-                truncate_str(&next.title, 16),
-                hours,
-                mins
-            )
-        };
-
-        crate::tray::update_tray_next_event(&display_text);
+/// The tray's "next event" line for an event at `start..end` seen at `now`.
+fn tray_text(title: &str, start: i64, end: i64, now: i64) -> String {
+    let rem_min = (start - now) / 60;
+    if now >= start && now < end {
+        let mins_left = (end - now) / 60;
+        format!("Now: {} ({}m left)", truncate_str(title, 18), mins_left)
+    } else if rem_min <= 0 {
+        format!("Next: {} (starting now)", truncate_str(title, 18))
+    } else if rem_min < 60 {
+        format!("Next: {} (in {}m)", truncate_str(title, 18), rem_min)
     } else {
-        crate::tray::update_tray_next_event("Next: No upcoming events");
+        format!(
+            "Next: {} (in {}h {}m)",
+            truncate_str(title, 16),
+            rem_min / 60,
+            rem_min % 60
+        )
     }
 }
 
+/// Shortens `s` to at most `max_len` characters (not bytes), ending in `…`.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.chars().count() > max_len {
-        let truncated: String = s.chars().take(max_len - 1).collect();
-        format!("{}…", truncated)
-    } else {
-        s.to_string()
+    if s.chars().count() <= max_len {
+        return s.to_string();
+    }
+    if max_len == 0 {
+        return String::new();
+    }
+    let truncated: String = s.chars().take(max_len - 1).collect();
+    format!("{}…", truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_counts_chars_not_bytes() {
+        assert_eq!(truncate_str("short", 18), "short");
+        assert_eq!(truncate_str("exactly5", 8), "exactly5");
+        assert_eq!(truncate_str("123456789", 5), "1234…");
+        assert_eq!(truncate_str("üüüüüü", 4), "üüü…");
+        assert_eq!(truncate_str("🎉🎉🎉", 2), "🎉…");
+        assert_eq!(truncate_str("abc", 1), "…");
+        assert_eq!(truncate_str("abc", 0), "");
+        assert_eq!(truncate_str("", 0), "");
+    }
+
+    #[test]
+    fn tray_text_states() {
+        let now = 1_000_000;
+        assert_eq!(
+            tray_text("Standup", now - 60, now + 600, now),
+            "Now: Standup (10m left)"
+        );
+        assert_eq!(
+            tray_text("Standup", now + 30, now + 600, now),
+            "Next: Standup (starting now)"
+        );
+        assert_eq!(
+            tray_text("Standup", now + 59 * 60, now + 3600, now),
+            "Next: Standup (in 59m)"
+        );
+        assert_eq!(
+            tray_text("Standup", now + 3600, now + 7200, now),
+            "Next: Standup (in 1h 0m)"
+        );
+        assert_eq!(
+            tray_text(
+                "A very long meeting title indeed",
+                now + 7500,
+                now + 9000,
+                now
+            ),
+            "Next: A very long mee… (in 2h 5m)"
+        );
+    }
+
+    #[test]
+    fn sync_config_serde_round_trip() {
+        let cfg = CalendarSyncConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"leadTimeMin\":5"));
+        let back: CalendarSyncConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.lead_time_min, 5);
+        assert!(back.skip_all_day && back.skip_tentative && !back.private_mode);
     }
 }
