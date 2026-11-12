@@ -84,7 +84,7 @@
               </div>
               <div class="device-main-info">
                 <h4 id="device-name">No CubiPal Paired</h4>
-                <p id="device-subtitle" class="text-muted">Put your Pal into pairing mode to begin</p>
+                <p id="device-subtitle" class="text-muted">Click Scan Network to find your Pal on this Wi-Fi, then use the show-code gesture to get its pairing code.</p>
               </div>
               <button class="btn btn-secondary" id="btn-scan">Scan Network</button>
             </div>
@@ -110,14 +110,14 @@
               </div>
               <div class="spec-item">
                 <span class="spec-label">Magnetic Skin</span>
-                <select id="spec-skin" class="skin-select" style="font-size:12px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;margin-top:2px;" disabled>
+                <select id="spec-skin" class="skin-select" aria-label="Magnetic skin" style="font-size:12px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;margin-top:2px;" disabled>
                   <option value="robot">Robot (Default)</option>
-                  <option value="capybara">Capybara (Blush)</option>
-                  <option value="tiger">Tiger (Cheek Pads)</option>
-                  <option value="puppy">Puppy (Tongue)</option>
-                  <option value="dragon">Dragon (Ember Blush)</option>
-                  <option value="dinosaur">Dinosaur (Coral)</option>
-                  <option value="unicorn">Unicorn (Violet)</option>
+                  <option value="capybara">Capybara</option>
+                  <option value="tiger">Tiger</option>
+                  <option value="puppy">Puppy</option>
+                  <option value="dragon">Dragon</option>
+                  <option value="dinosaur">Dinosaur</option>
+                  <option value="unicorn">Unicorn</option>
                 </select>
               </div>
             </div>
@@ -341,13 +341,13 @@
 
     <!-- Pairing Modal -->
     <div class="modal-backdrop hidden" id="pairing-modal">
-      <div class="modal-dialog">
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-pal-name" aria-describedby="pairing-instructions">
         <div class="modal-header">
           <h4 id="modal-pal-name">Pair with CubiPal</h4>
-          <button class="modal-close" id="btn-modal-close">&times;</button>
+          <button type="button" class="modal-close" id="btn-modal-close" aria-label="Close">&times;</button>
         </div>
         <div class="modal-body">
-          <div class="pairing-instructions">
+          <div class="pairing-instructions" id="pairing-instructions">
             <p class="mb-2"><strong>Touch Pattern:</strong></p>
             <ol class="instruction-steps">
               <li>Touch and hold the crown touch point for <strong>3 seconds</strong>.</li>
@@ -358,9 +358,9 @@
 
           <div class="code-entry mt-4">
             <label for="input-pairing-code" class="spec-label">Enter 8-Digit Code</label>
-            <input type="text" id="input-pairing-code" class="code-input" placeholder="4821 7390" maxlength="9" />
+            <input type="text" id="input-pairing-code" class="code-input" placeholder="4821 7390" maxlength="9" inputmode="numeric" autocomplete="one-time-code" aria-describedby="pairing-error-msg" />
             <input type="hidden" id="modal-target-ip" />
-            <div class="error-msg hidden" id="pairing-error-msg"></div>
+            <div class="error-msg hidden" id="pairing-error-msg" role="alert"></div>
           </div>
         </div>
         <div class="modal-footer">

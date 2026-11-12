@@ -210,7 +210,7 @@ async function refreshDeviceStatus() {
       lastFirmwareCheckAt = 0; // re-check as soon as the Pal is back
       currentDeviceIp = null;
       nameEl.textContent = "No CubiPal Paired";
-      subtitleEl.textContent = "Put your Pal into pairing mode to begin";
+      subtitleEl.textContent = "Click Scan Network to find your Pal on this Wi-Fi, then use the show-code gesture to get its pairing code.";
       ipEl.textContent = "Not connected";
       wifiEl.textContent = "—";
       fwEl.textContent = "—";
@@ -334,10 +334,38 @@ function setupPairingModal() {
     inputCode.value = "";
     errorMsg.classList.add("hidden");
     btnPair.disabled = false;
+    // Return focus to whatever opened the dialog (e.g. the Pair button).
+    pairingModalOpener?.focus();
+    pairingModalOpener = null;
   };
 
   btnClose.addEventListener("click", closeModal);
   btnCancel.addEventListener("click", closeModal);
+
+  // Keyboard: Esc closes, Enter in the code field submits, Tab stays in the dialog.
+  modal.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeModal();
+    } else if (e.key === "Enter" && e.target === inputCode && !btnPair.disabled) {
+      e.preventDefault();
+      btnPair.click();
+    } else if (e.key === "Tab") {
+      const focusable = Array.from(
+        modal.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([type=hidden])")
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  });
 
   // Auto-format "XXXX XXXX"
   inputCode.addEventListener("input", () => {
@@ -382,7 +410,10 @@ function setupPairingModal() {
   });
 }
 
+let pairingModalOpener: HTMLElement | null = null;
+
 function openPairingModal(ip: string, name: string) {
+  pairingModalOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const modal = document.getElementById("pairing-modal")!;
   const title = document.getElementById("modal-pal-name")!;
   const targetIpInput = document.getElementById("modal-target-ip") as HTMLInputElement;

@@ -53,6 +53,7 @@ body {
 /* Sidebar */
 .sidebar {
   width: 220px;
+  flex-shrink: 0;
   background-color: var(--bg-sidebar);
   border-right: 1px solid var(--border-color);
   display: flex;
