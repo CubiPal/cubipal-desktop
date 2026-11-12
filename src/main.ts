@@ -11,9 +11,14 @@ interface DeviceState {
   ssid?: string;
   rssi?: number;
   fw?: string;
+  fw_label: string;
+  chip?: string;
+  model?: string;
+  id?: string;
   skin?: string;
   ip: string;
   connected: boolean;
+  problem?: string;
 }
 
 interface DiscoveredPal {
@@ -22,6 +27,7 @@ interface DiscoveredPal {
   ip: string;
   port: number;
   model: string;
+  chip?: string;
   fw: string;
 }
 
@@ -65,11 +71,11 @@ interface CalendarEvent {
 
 interface FirmwareUpdateInfo {
   available: boolean;
-  latest_version: string;
+  latest_version: string | null;
   current_version: string;
-  download_url: string | null;
-  sha256: string | null;
-  release_notes: string | null;
+  chip: string | null;
+  blocked_reason: string | null;
+  notes_url: string | null;
 }
 
 interface DesktopUpdateInfo {
@@ -86,9 +92,8 @@ interface OtaProgress {
 
 let currentDeviceIp: string | null = null;
 let firmwareUpdateReady = false;
-let firmwareUpdateVerified = false;
-// GitHub's unauthenticated API allows 60 requests/hour, so only re-check firmware
-// releases when the Pal's version changes, or hourly (the backend also caches).
+// Only re-check for firmware when the Pal's version changes, or hourly (the
+// backend also caches cubipal.com/firmware/latest.json for an hour).
 const FIRMWARE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 let lastFirmwareCheckAt = 0;
 let lastFirmwareCheckVersion: string | undefined;
@@ -164,7 +169,7 @@ async function refreshDeviceStatus() {
       subtitleEl.textContent = "Paired and connected over local Wi-Fi";
       ipEl.textContent = `http://${dev.ip}`;
       wifiEl.textContent = dev.ssid ? `${dev.ssid} (${dev.rssi || 0} dBm)` : "Connected";
-      fwEl.textContent = dev.fw || "v1.0.0";
+      fwEl.textContent = dev.fw_label;
       volumeEl.textContent = dev.muted ? "Muted" : `Level ${dev.volume ?? 3}`;
       if (skinEl) {
         skinEl.disabled = false;
@@ -192,8 +197,8 @@ async function refreshDeviceStatus() {
       lastFirmwareCheckAt = 0; // re-check as soon as the Pal is back
       currentDeviceIp = dev.ip;
       nameEl.textContent = `${dev.robot} (Offline)`;
-      subtitleEl.textContent = "Cannot reach device on the network";
-      ipEl.textContent = `http://${dev.ip} (Unreachable)`;
+      subtitleEl.textContent = dev.problem || "Cannot reach device on the network";
+      ipEl.textContent = dev.ip ? `http://${dev.ip} (Unreachable)` : "Unreachable";
       wifiEl.textContent = "Offline";
       fwEl.textContent = "—";
       volumeEl.textContent = "—";
@@ -264,14 +269,14 @@ function setupActionButtons() {
           nameEl.textContent = pal.name;
           const meta = document.createElement("div");
           meta.className = "discovered-meta";
-          meta.textContent = `${pal.ip} \u2022 Model ${pal.model} \u2022 FW ${pal.fw}`;
+          meta.textContent = `${pal.ip} \u2022 Model ${pal.model} \u2022 Firmware ${pal.fw}`;
           info.append(nameEl, meta);
 
           const btn = document.createElement("button");
           btn.className = "btn btn-primary btn-pair-pal";
           btn.textContent = "Pair";
           btn.setAttribute("aria-label", `Pair with ${pal.name}`);
-          btn.addEventListener("click", () => openPairingModal(pal.ip, pal.name));
+          btn.addEventListener("click", () => openPairingModal(pal.ip, pal.name, pal.id));
 
           row.append(info, btn);
           scanList.appendChild(row);
@@ -290,7 +295,7 @@ function setupActionButtons() {
   btnManualIp.addEventListener("click", () => {
     const ip = prompt("Enter CubiPal IP address or hostname (e.g. 192.168.1.100 or cubipal-ab12.local):");
     if (ip && ip.trim()) {
-      openPairingModal(ip.trim(), "CubiPal");
+      openPairingModal(ip.trim(), "CubiPal", null);
     }
   });
 
@@ -327,6 +332,7 @@ function setupPairingModal() {
   const btnPair = document.getElementById("btn-modal-pair") as HTMLButtonElement;
   const inputCode = document.getElementById("input-pairing-code") as HTMLInputElement;
   const targetIpInput = document.getElementById("modal-target-ip") as HTMLInputElement;
+  const targetIdInput = document.getElementById("modal-target-id") as HTMLInputElement;
   const errorMsg = document.getElementById("pairing-error-msg")!;
 
   const closeModal = () => {
@@ -378,6 +384,7 @@ function setupPairingModal() {
 
   btnPair.addEventListener("click", async () => {
     const ip = targetIpInput.value;
+    const id = targetIdInput.value || null;
     const code = inputCode.value.trim();
 
     if (code.replace(/\s/g, "").length !== 8) {
@@ -390,7 +397,7 @@ function setupPairingModal() {
     errorMsg.classList.add("hidden");
 
     try {
-      const res = await invoke<PairResponse>("pair_pal", { ip, code });
+      const res = await invoke<PairResponse>("pair_pal", { ip, code, id });
       if (res.ok) {
         closeModal();
         const scanCard = document.getElementById("scan-results-card");
@@ -412,7 +419,7 @@ function setupPairingModal() {
 
 let pairingModalOpener: HTMLElement | null = null;
 
-function openPairingModal(ip: string, name: string) {
+function openPairingModal(ip: string, name: string, id: string | null) {
   pairingModalOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const modal = document.getElementById("pairing-modal")!;
   const title = document.getElementById("modal-pal-name")!;
@@ -422,6 +429,8 @@ function openPairingModal(ip: string, name: string) {
 
   title.textContent = `Pair with ${name}`;
   targetIpInput.value = ip;
+  (document.getElementById("modal-target-id") as HTMLInputElement).value =
+    id && id !== "unknown" ? id : "";
   inputCode.value = "";
   errorMsg.classList.add("hidden");
 
@@ -858,20 +867,23 @@ async function offerDesktopUpdate(info: DesktopUpdateInfo | null, manual: boolea
 async function checkFirmwareUpdate() {
   const otaCard = document.getElementById("ota-card");
   if (!otaCard) return;
+  const titleEl = document.getElementById("ota-title");
+  const descEl = document.getElementById("ota-desc");
+  const btnInstall = document.getElementById("btn-install-ota") as HTMLButtonElement | null;
 
   try {
     const info = await invoke<FirmwareUpdateInfo>("check_firmware_update", { force: false });
-    if (info && info.available && info.download_url) {
-      firmwareUpdateReady = true;
-      firmwareUpdateVerified = !!info.sha256;
-      const titleEl = document.getElementById("ota-title");
-      const descEl = document.getElementById("ota-desc");
+    if (info.available && info.latest_version) {
+      // An update exists. It can be installed unless the backend says why not
+      // (e.g. the Pal doesn't report its board type).
+      firmwareUpdateReady = !info.blocked_reason;
       if (titleEl) titleEl.textContent = `Firmware v${info.latest_version} Available`;
       if (descEl) {
-        descEl.textContent = firmwareUpdateVerified
-          ? `Your Pal is running v${info.current_version}. Update over Wi-Fi; the download is checked against its published SHA-256 checksum.`
-          : `Your Pal is running v${info.current_version}. Update over Wi-Fi. This release has no published checksum, so the download can't be verified.`;
+        descEl.textContent = info.blocked_reason
+          ? `Your Pal is running ${info.current_version}. ${info.blocked_reason}`
+          : `Your Pal is running ${info.current_version}. Update over Wi-Fi; the download is checked against its published size and SHA-256 checksum.`;
       }
+      if (btnInstall) btnInstall.classList.toggle("hidden", !firmwareUpdateReady);
       otaCard.classList.remove("hidden");
     } else {
       firmwareUpdateReady = false;
@@ -892,12 +904,9 @@ function setupOta() {
   if (btnInstall) {
     btnInstall.addEventListener("click", async () => {
       if (!firmwareUpdateReady) return;
-      const integrityNote = firmwareUpdateVerified
-        ? "The download is checked against its published SHA-256 checksum before it is sent to your Pal."
-        : "This release has no published checksum, so the download can't be verified.";
       if (
         !confirm(
-          `Install firmware update on your CubiPal now?\n\n${integrityNote} Your Pal installs it over Wi-Fi and restarts.\n\nThe update won't start while a focus timer is running or a meeting is about to start.`
+          "Install firmware update on your CubiPal now?\n\nThe download is checked (size and SHA-256) before it is sent to your Pal. Your Pal installs it over Wi-Fi and restarts.\n\nThe update won't start while a focus timer is running or a meeting is about to start."
         )
       ) {
         return;
@@ -908,8 +917,13 @@ function setupOta() {
 
       try {
         await invoke("install_firmware_update", { force: false });
-      } catch (err: any) {
-        alert(err);
+      } catch (err) {
+        // The backend names the failed stage and the Pal's own reason; keep it
+        // visible in the card rather than in a passing alert (TST-19).
+        if (progressText) {
+          progressText.textContent = String(err);
+          progressText.classList.add("text-danger");
+        }
         btnInstall.disabled = false;
         btnInstall.textContent = "Retry Update";
       }
@@ -920,7 +934,10 @@ function setupOta() {
     const p = event.payload;
     if (progressBox) progressBox.classList.remove("hidden");
     if (progressBar) progressBar.style.width = `${p.percent}%`;
-    if (progressText) progressText.textContent = p.message;
+    if (progressText) {
+      progressText.textContent = p.message;
+      progressText.classList.toggle("text-danger", p.stage === "error");
+    }
 
     if (p.stage === "completed") {
       if (btnInstall) {

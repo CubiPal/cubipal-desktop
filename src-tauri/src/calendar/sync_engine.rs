@@ -182,9 +182,10 @@ async fn retry_pending_push(
 }
 
 async fn push_events_payload(events: &[DevicePushEvent]) -> Result<bool, String> {
-    let (ip, token) = match crate::device::get_saved_device_credentials() {
-        Some(creds) => creds,
-        None => return Ok(false),
+    let target = match crate::device::resolve_paired_device().await {
+        Ok(t) => t,
+        Err(crate::device::ResolveError::NotPaired) => return Ok(false),
+        Err(e) => return Err(e.message()),
     };
 
     let payload = DevicePushPayload {
@@ -197,19 +198,19 @@ async fn push_events_payload(events: &[DevicePushEvent]) -> Result<bool, String>
         .map_err(|e| e.to_string())?;
 
     let res = client
-        .put(format!("http://{}/api/events", ip))
-        .header("Authorization", format!("Bearer {}", token))
+        .put(format!("http://{}/api/events", target.ip))
+        .bearer_auth(&target.token)
         .header("X-Pet", "1")
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(crate::device::reach_error)?;
 
     if res.status().is_success() {
         Ok(true)
     } else {
-        Err(format!("Device returned HTTP {}", res.status()))
+        Err(crate::device::device_error(res).await)
     }
 }
 

@@ -1,30 +1,45 @@
+use semver::{BuildMetadata, Version};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
-/// Firmware releases are published here (see the firmware repo's release workflow).
-const FIRMWARE_RELEASES_URL: &str = "https://api.github.com/repos/CubiPal/CubiPal/releases/latest";
+/// Firmware releases are published here by the firmware CI (contract §3).
+/// The app never uses the GitHub API for firmware.
+const LATEST_JSON_URL: &str = "https://cubipal.com/firmware/latest.json";
+/// Firmware images are only ever downloaded from under this prefix.
+const FIRMWARE_URL_PREFIX: &str = "https://cubipal.com/firmware/";
 
-/// How long a successful GitHub release lookup is reused. The unauthenticated
-/// GitHub API allows 60 requests per hour per IP, so never poll it on a timer.
-const RELEASE_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
-/// How long a failed lookup is remembered before trying GitHub again.
-const RELEASE_FAILURE_TTL: Duration = Duration::from_secs(10 * 60);
+/// How long a fetched `latest.json` is reused.
+const LATEST_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+/// How long a failed fetch is remembered before trying again.
+const LATEST_FAILURE_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// Largest image the app will download (the Pal's flash is 4 MB).
+const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Every ESP32 application image starts with this magic byte. The merged
-/// factory image (bootloader at 0x1000) starts with 0xFF padding instead.
+/// factory image starts with the bootloader or 0xFF padding instead.
 const ESP_IMAGE_MAGIC: u8 = 0xE9;
+
+/// Chip ids this app knows how to update (contract §2), with the chip id the
+/// ESP-IDF image header (`esp_image_header_t.chip_id`, bytes 12-13) carries.
+const KNOWN_CHIPS: &[(&str, u16)] = &[("esp32", 0x0000), ("esp32s3", 0x0009)];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirmwareUpdateInfo {
+    /// A newer release exists for this Pal.
     pub available: bool,
-    pub latest_version: String,
+    pub latest_version: Option<String>,
+    /// The Pal's version for display ("v1.1.0" or "unknown version").
     pub current_version: String,
-    pub download_url: Option<String>,
-    pub sha256: Option<String>,
-    pub release_notes: Option<String>,
+    pub chip: Option<String>,
+    /// Set when an update exists (or might) but can't be installed from the
+    /// app, or the check couldn't run. Shown to the user as is.
+    pub blocked_reason: Option<String>,
+    pub notes_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,280 +49,333 @@ pub struct OtaProgress {
     pub message: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    body: Option<String>,
-    #[serde(default)]
-    assets: Vec<GithubAsset>,
+// ---------------------------------------------------------------------------
+// Versions (contract §1)
+// ---------------------------------------------------------------------------
+
+/// Parses a firmware version as semver (`v` prefix allowed). Build metadata
+/// (`+3.gabc123`) is dropped, so a dev build equals its release. Legacy
+/// strings like `"1 Nov 12 2026"` give `None`.
+pub fn parse_version(raw: &str) -> Option<Version> {
+    let t = raw.trim();
+    let t = t
+        .strip_prefix('v')
+        .or_else(|| t.strip_prefix('V'))
+        .unwrap_or(t);
+    let mut v = Version::parse(t).ok()?;
+    v.build = BuildMetadata::EMPTY;
+    Some(v)
 }
 
-#[derive(Debug, Deserialize)]
-struct GithubAsset {
-    name: String,
-    browser_download_url: String,
+/// True when `latest` should be offered to a Pal running `current`. A
+/// prerelease ranks below its release; an unparseable or missing current
+/// version is older than any release.
+pub fn is_update_available(latest: &str, current: Option<&str>) -> bool {
+    let Some(latest) = parse_version(latest) else {
+        return false;
+    };
+    match current.and_then(parse_version) {
+        Some(current) => latest > current,
+        None => true,
+    }
 }
 
-#[derive(Debug, Deserialize)]
-struct FirmwareManifest {
-    version: Option<String>,
-    firmware_file: Option<String>,
-    sha256: Option<String>,
+/// The Pal's version as shown to people.
+pub fn version_label(raw: Option<&str>) -> String {
+    match raw.map(str::trim).filter(|s| parse_version(s).is_some()) {
+        Some(v) => format!("v{}", v.trim_start_matches(['v', 'V'])),
+        None => "unknown version".to_string(),
+    }
 }
 
-/// The OTA image the backend resolved from its own GitHub lookup. The webview
-/// never supplies the download URL or hash.
-#[derive(Debug, Clone)]
-struct ResolvedRelease {
+// ---------------------------------------------------------------------------
+// latest.json
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+struct LatestRelease {
     version: String,
-    bin_url: String,
-    sha256: Option<String>,
-    notes: Option<String>,
+    #[serde(default)]
+    notes_url: Option<String>,
+    #[serde(default)]
+    builds: HashMap<String, ChipBuilds>,
 }
 
-static RELEASE_CACHE: Mutex<Option<(Instant, Option<ResolvedRelease>)>> = Mutex::new(None);
+#[derive(Debug, Clone, Deserialize)]
+struct ChipBuilds {
+    ota: Option<BuildFile>,
+}
 
-fn github_client() -> Result<reqwest::Client, String> {
+#[derive(Debug, Clone, Deserialize)]
+struct BuildFile {
+    url: String,
+    sha256: String,
+    size: u64,
+}
+
+/// The OTA image for one chip, checked to be well-formed. Kept in the
+/// backend: the webview never supplies the URL or hash.
+#[derive(Debug, Clone, PartialEq)]
+struct OtaBuild {
+    version: String,
+    url: String,
+    sha256: String,
+    size: u64,
+}
+
+type CachedLatest = (Instant, Result<Arc<LatestRelease>, String>);
+static LATEST_CACHE: Mutex<Option<CachedLatest>> = Mutex::new(None);
+
+fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .user_agent("CubiPal-Desktop")
+        .timeout(timeout)
+        .user_agent(concat!("CubiPal-Desktop/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| e.to_string())
 }
 
-/// Returns the latest firmware release, from cache unless it is stale or
-/// `force_refresh` is set.
-async fn latest_release(force_refresh: bool) -> Result<Option<ResolvedRelease>, String> {
+/// `latest.json`, from cache unless it is stale or `force_refresh` is set.
+async fn latest_release(force_refresh: bool) -> Result<Arc<LatestRelease>, String> {
     if !force_refresh
-        && let Ok(guard) = RELEASE_CACHE.lock()
+        && let Ok(guard) = LATEST_CACHE.lock()
         && let Some((fetched_at, cached)) = guard.as_ref()
     {
-        let ttl = if cached.is_some() {
-            RELEASE_CACHE_TTL
+        let ttl = if cached.is_ok() {
+            LATEST_CACHE_TTL
         } else {
-            RELEASE_FAILURE_TTL
+            LATEST_FAILURE_TTL
         };
         if fetched_at.elapsed() < ttl {
-            return Ok(cached.clone());
+            return cached.clone();
         }
     }
 
-    let client = github_client()?;
-    let resolved = fetch_latest_release(&client).await.ok();
-    if let Ok(mut guard) = RELEASE_CACHE.lock() {
-        *guard = Some((Instant::now(), resolved.clone()));
+    let fetched = fetch_latest_release().await.map(Arc::new);
+    if let Ok(mut guard) = LATEST_CACHE.lock() {
+        *guard = Some((Instant::now(), fetched.clone()));
     }
-    Ok(resolved)
+    fetched
 }
 
-async fn fetch_latest_release(client: &reqwest::Client) -> Result<ResolvedRelease, String> {
-    let release: GithubRelease = client
-        .get(FIRMWARE_RELEASES_URL)
+async fn fetch_latest_release() -> Result<LatestRelease, String> {
+    let client = http_client(Duration::from_secs(10))?;
+    let text = client
+        .get(LATEST_JSON_URL)
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?
-        .json()
+        .map_err(|e| format!("Couldn't reach cubipal.com: {}", e.without_url()))?
+        .text()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Couldn't read the firmware release list: {}", e))?;
+    parse_latest_json(&text)
+}
 
-    let mut manifest: Option<FirmwareManifest> = None;
-    if let Some(asset) = find_manifest_asset(&release.assets)
-        && let Ok(resp) = client
-            .get(&asset.browser_download_url)
-            .send()
-            .await
-            .and_then(|r| r.error_for_status())
-    {
-        manifest = resp.json::<FirmwareManifest>().await.ok();
+fn parse_latest_json(text: &str) -> Result<LatestRelease, String> {
+    let release: LatestRelease = serde_json::from_str(text)
+        .map_err(|e| format!("The firmware release list is malformed: {}", e))?;
+    if parse_version(&release.version).is_none() {
+        return Err(format!(
+            "The firmware release list has an invalid version ({}).",
+            release.version
+        ));
     }
-
-    let manifest_file = manifest.as_ref().and_then(|m| m.firmware_file.as_deref());
-    let bin = select_firmware_asset(&release.assets, manifest_file)
-        .ok_or_else(|| "Release has no OTA firmware image".to_string())?;
-
-    // The manifest hash belongs to the manifest's firmware_file; only trust it
-    // for the image we actually picked.
-    let mut sha256 = manifest
-        .as_ref()
-        .filter(|m| {
-            m.firmware_file
-                .as_deref()
-                .is_none_or(|f| f.eq_ignore_ascii_case(&bin.name))
-        })
-        .and_then(|m| m.sha256.as_deref())
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| is_sha256_hex(s));
-
-    if sha256.is_none()
-        && let Some(asset) = select_sha_asset(&release.assets, &bin.name)
-        && let Ok(resp) = client
-            .get(&asset.browser_download_url)
-            .send()
-            .await
-            .and_then(|r| r.error_for_status())
-        && let Ok(text) = resp.text().await
-    {
-        sha256 = parse_sha256_text(&text, &bin.name);
-    }
-
-    let version = manifest
-        .as_ref()
-        .and_then(|m| m.version.clone())
-        .unwrap_or(release.tag_name);
-
-    Ok(ResolvedRelease {
-        version: version.trim().trim_start_matches('v').to_string(),
-        bin_url: bin.browser_download_url.clone(),
-        sha256,
-        notes: release.body,
-    })
+    Ok(release)
 }
 
-/// `force` re-queries GitHub (manual "check now"); otherwise a cached lookup
-/// up to an hour old is reused.
-#[tauri::command]
-pub async fn check_firmware_update(force: Option<bool>) -> Result<FirmwareUpdateInfo, String> {
-    let dev = crate::device::get_paired_device()
-        .await
-        .map_err(|e| format!("Failed to read paired device: {}", e))?
-        .ok_or_else(|| "No CubiPal is currently paired.".to_string())?;
-
-    let current_version = dev.fw.unwrap_or_else(|| "1.0.0".to_string());
-
-    let Some(release) = latest_release(force.unwrap_or(false)).await? else {
-        return Ok(FirmwareUpdateInfo {
-            available: false,
-            latest_version: current_version.clone(),
-            current_version,
-            download_url: None,
-            sha256: None,
-            release_notes: None,
-        });
-    };
-
-    Ok(FirmwareUpdateInfo {
-        available: is_version_newer(&release.version, &current_version),
-        latest_version: release.version,
-        current_version,
-        download_url: Some(release.bin_url),
-        sha256: release.sha256,
-        release_notes: release.notes,
-    })
-}
-
-fn find_manifest_asset(assets: &[GithubAsset]) -> Option<&GithubAsset> {
-    assets.iter().find(|a| {
-        let n = a.name.to_ascii_lowercase();
-        n == "manifest.json" || n.ends_with("-manifest.json")
-    })
-}
-
-/// True for a `.bin` that can be sent to `/api/update`: never the merged
-/// factory image (bootloader + partition table + app).
-fn is_ota_image_name(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n.ends_with(".bin") && !n.contains("factory") && !n.contains("merged")
-}
-
-/// Picks the OTA app image: the manifest's `firmware_file` when it names an
-/// OTA image in the release, else a `*firmware*.bin`, else any other OTA `.bin`.
-fn select_firmware_asset<'a>(
-    assets: &'a [GithubAsset],
-    manifest_file: Option<&str>,
-) -> Option<&'a GithubAsset> {
-    if let Some(wanted) = manifest_file
-        && let Some(a) = assets
-            .iter()
-            .find(|a| a.name.eq_ignore_ascii_case(wanted) && is_ota_image_name(&a.name))
-    {
-        return Some(a);
-    }
-    assets
-        .iter()
-        .filter(|a| is_ota_image_name(&a.name))
-        .find(|a| a.name.to_ascii_lowercase().contains("firmware"))
-        .or_else(|| assets.iter().find(|a| is_ota_image_name(&a.name)))
-}
-
-/// Prefers a per-file checksum (`<bin>.sha256`), else a combined
-/// `sha256sums.txt`-style file.
-fn select_sha_asset<'a>(assets: &'a [GithubAsset], bin_name: &str) -> Option<&'a GithubAsset> {
-    let bin = bin_name.to_ascii_lowercase();
-    let stem = bin.trim_end_matches(".bin");
-    assets
-        .iter()
-        .find(|a| {
-            let n = a.name.to_ascii_lowercase();
-            n == format!("{bin}.sha256") || n == format!("{stem}.sha256")
-        })
-        .or_else(|| {
-            assets.iter().find(|a| {
-                let n = a.name.to_ascii_lowercase();
-                n.contains("sha256") && !n.ends_with(".bin")
-            })
-        })
+fn is_known_chip(chip: &str) -> bool {
+    KNOWN_CHIPS.iter().any(|(c, _)| *c == chip)
 }
 
 fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Reads a checksum file. A line naming another file (e.g. the factory image
-/// in `sha256sums.txt`) is ignored; a bare hash line is accepted.
-fn parse_sha256_text(text: &str, bin_name: &str) -> Option<String> {
-    for line in text.lines() {
-        let mut tokens = line.split_whitespace();
-        let Some(hash) = tokens.next() else { continue };
-        if !is_sha256_hex(hash) {
-            continue;
-        }
-        match tokens.next() {
-            None => return Some(hash.to_ascii_lowercase()),
-            Some(file) if file.trim_start_matches('*').eq_ignore_ascii_case(bin_name) => {
-                return Some(hash.to_ascii_lowercase());
-            }
-            Some(_) => {}
-        }
+/// The OTA build for `chip`, with its URL, hash and size checked.
+fn select_build(release: &LatestRelease, chip: &str) -> Result<OtaBuild, String> {
+    let file = release
+        .builds
+        .get(chip)
+        .and_then(|b| b.ota.as_ref())
+        .ok_or_else(|| {
+            format!(
+                "Firmware v{} has no update for this Pal's board ({}).",
+                release.version, chip
+            )
+        })?;
+    if !file.url.starts_with(FIRMWARE_URL_PREFIX) || file.url.contains("..") {
+        return Err("The firmware release list points outside cubipal.com/firmware.".to_string());
     }
-    None
+    let sha256 = file.sha256.trim().to_ascii_lowercase();
+    if !is_sha256_hex(&sha256) {
+        return Err("The firmware release list has no valid SHA-256 for this image.".to_string());
+    }
+    if file.size == 0 || file.size > MAX_IMAGE_BYTES {
+        return Err("The firmware release list has an invalid image size.".to_string());
+    }
+    Ok(OtaBuild {
+        version: release
+            .version
+            .trim()
+            .trim_start_matches(['v', 'V'])
+            .to_string(),
+        url: file.url.clone(),
+        sha256,
+        size: file.size,
+    })
 }
 
-/// Rejects anything that is not an ESP32 app image (HTML error pages, the
-/// merged factory image, random files) before it is sent to the Pal.
-fn check_esp_image(bytes: &[u8]) -> Result<(), String> {
-    match bytes.first() {
-        Some(&ESP_IMAGE_MAGIC) => Ok(()),
-        Some(_) => Err(
-            "This file is not a CubiPal OTA firmware image (wrong header). Use the CubiPal-firmware-*.bin file, not the factory image."
-                .to_string(),
-        ),
-        None => Err("The firmware file is empty.".to_string()),
-    }
+// ---------------------------------------------------------------------------
+// Update check
+// ---------------------------------------------------------------------------
+
+const UNKNOWN_CHIP_MSG: &str = "Your Pal's firmware doesn't say which board it has, so the app can't pick the right update. Update it once from cubipal.com/recover over USB; after that the app can update it over Wi-Fi.";
+
+/// What the app would install, or why it can't.
+struct UpdatePlan {
+    info: FirmwareUpdateInfo,
+    build: Option<OtaBuild>,
 }
 
-fn is_version_newer(latest: &str, current: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> {
-        v.split('.')
-            .map(|p| {
-                p.chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect::<String>()
-            })
-            .filter_map(|p| p.parse().ok())
-            .collect()
+async fn plan_update(force_refresh: bool) -> Result<UpdatePlan, String> {
+    let dev = crate::device::get_paired_device()
+        .await?
+        .ok_or_else(|| "No CubiPal is currently paired.".to_string())?;
+
+    let mut info = FirmwareUpdateInfo {
+        available: false,
+        latest_version: None,
+        current_version: dev.fw_label.clone(),
+        chip: dev.chip.clone(),
+        blocked_reason: None,
+        notes_url: None,
     };
-    let l_parts = parse(latest);
-    let c_parts = parse(current);
-    for (l, c) in l_parts.iter().zip(c_parts.iter()) {
-        if l > c {
-            return true;
+
+    // Offline: the version is unknown, so offer nothing (QA-09).
+    if !dev.connected {
+        info.current_version = "unknown version".to_string();
+        info.blocked_reason = Some("Your Pal is offline.".to_string());
+        return Ok(UpdatePlan { info, build: None });
+    }
+
+    let release = match latest_release(force_refresh).await {
+        Ok(r) => r,
+        Err(e) => {
+            info.blocked_reason = Some(e);
+            return Ok(UpdatePlan { info, build: None });
         }
-        if l < c {
-            return false;
+    };
+    info.latest_version = Some(release.version.trim_start_matches(['v', 'V']).to_string());
+    info.notes_url = release
+        .notes_url
+        .clone()
+        .filter(|u| u.starts_with(FIRMWARE_URL_PREFIX));
+    info.available = is_update_available(&release.version, dev.fw.as_deref());
+    if !info.available {
+        return Ok(UpdatePlan { info, build: None });
+    }
+
+    // Never guess the board: a classic image can't run on an S3 and vice versa.
+    let chip = match dev.chip.as_deref() {
+        Some(c) if is_known_chip(c) => c.to_string(),
+        _ => {
+            info.blocked_reason = Some(UNKNOWN_CHIP_MSG.to_string());
+            return Ok(UpdatePlan { info, build: None });
+        }
+    };
+    match select_build(&release, &chip) {
+        Ok(build) => Ok(UpdatePlan {
+            info,
+            build: Some(build),
+        }),
+        Err(e) => {
+            info.blocked_reason = Some(e);
+            Ok(UpdatePlan { info, build: None })
         }
     }
-    l_parts.len() > c_parts.len()
+}
+
+/// `force` re-fetches `latest.json` (manual "check now"); otherwise a copy up
+/// to an hour old is reused.
+#[tauri::command]
+pub async fn check_firmware_update(force: Option<bool>) -> Result<FirmwareUpdateInfo, String> {
+    plan_update(force.unwrap_or(false)).await.map(|p| p.info)
+}
+
+// ---------------------------------------------------------------------------
+// Install
+// ---------------------------------------------------------------------------
+
+/// Rejects anything that is not an ESP32 app image for this chip (HTML error
+/// pages, the merged factory image, the other board's image).
+fn check_esp_image(bytes: &[u8], chip: Option<&str>) -> Result<(), String> {
+    match bytes.first() {
+        Some(&ESP_IMAGE_MAGIC) => {}
+        Some(_) => {
+            return Err(
+                "This file is not a CubiPal OTA firmware image (wrong header). It may be the factory image, which is for USB flashing only."
+                    .to_string(),
+            );
+        }
+        None => return Err("The firmware file is empty.".to_string()),
+    }
+    if let Some(chip) = chip
+        && let Some((_, want)) = KNOWN_CHIPS.iter().find(|(c, _)| *c == chip)
+    {
+        let Some(id_bytes) = bytes.get(12..14) else {
+            return Err("The firmware image is truncated.".to_string());
+        };
+        let got = u16::from_le_bytes([id_bytes[0], id_bytes[1]]);
+        if got != *want {
+            return Err(format!(
+                "This firmware image is for a different board (chip id {:#06x}), not this Pal ({}).",
+                got, chip
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Checks a downloaded image against the release list: exact size, SHA-256
+/// (always required), then the image header.
+fn verify_image(bytes: &[u8], build: &OtaBuild, chip: &str) -> Result<(), String> {
+    if bytes.len() as u64 != build.size {
+        return Err(format!(
+            "The download is {} bytes but should be {} bytes.",
+            bytes.len(),
+            build.size
+        ));
+    }
+    let computed = format!("{:x}", Sha256::digest(bytes));
+    if computed != build.sha256 {
+        return Err(format!(
+            "SHA-256 mismatch (expected {}, got {}).",
+            build.sha256, computed
+        ));
+    }
+    check_esp_image(bytes, Some(chip))
+}
+
+async fn download_image(build: &OtaBuild) -> Result<Vec<u8>, String> {
+    let client = http_client(Duration::from_secs(120))?;
+    let mut res = client
+        .get(&build.url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| e.without_url().to_string())?;
+    // Don't let a wrong or hostile response fill memory.
+    if res.content_length().is_some_and(|len| len > build.size) {
+        return Err("the server sent a larger file than expected".to_string());
+    }
+    let mut bytes = Vec::with_capacity(build.size as usize);
+    while let Some(chunk) = res.chunk().await.map_err(|e| e.without_url().to_string())? {
+        if bytes.len() as u64 + chunk.len() as u64 > build.size {
+            return Err("the server sent a larger file than expected".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 const IDLE_UNKNOWN_MSG: &str = "Couldn't confirm your Pal is idle, so the update was not started. Make sure your Pal is online and not in a meeting or focus timer, then try again.";
@@ -327,7 +395,7 @@ async fn check_device_idle(
     let state = client
         .get(format!("http://{}/api/state", ip))
         .header("X-Pet", "1")
-        .header("Authorization", format!("Bearer {}", token))
+        .bearer_auth(token)
         .send()
         .await
         .and_then(|r| r.error_for_status())
@@ -339,7 +407,7 @@ async fn check_device_idle(
     // Check active timer
     let timer_sec = state["timerSec"].as_u64().unwrap_or(0);
     if timer_sec > 0 {
-        return Err("Cannot install update: a Focus or Countdown timer is currently active on CubiPal. Stop the timer or wait for it to complete first.".to_string());
+        return Err("A Focus or Countdown timer is running on your Pal. Stop the timer or wait for it to finish first.".to_string());
     }
 
     // Check upcoming or ongoing meeting
@@ -350,7 +418,7 @@ async fn check_device_idle(
         if start_epoch > 0 && (start_epoch - now_epoch) <= 300 && (now_epoch - start_epoch) < 3600 {
             let title = next_event["title"].as_str().unwrap_or("Meeting");
             return Err(format!(
-                "Cannot install update: calendar meeting '{}' is starting or in progress. Updates are paused to prevent desk interruptions.",
+                "The meeting '{}' is starting or in progress. Updates wait so your desk isn't interrupted.",
                 title
             ));
         }
@@ -358,137 +426,91 @@ async fn check_device_idle(
     Ok(())
 }
 
-/// Installs the latest firmware release. The download URL and expected hash
-/// come from the backend's own release lookup, never from the webview.
+/// Installs the latest firmware for the paired Pal's board. The download URL
+/// and expected hash come from the backend's own `latest.json` lookup, never
+/// from the webview.
 #[tauri::command]
 pub async fn install_firmware_update(
     window: tauri::Window,
     force: Option<bool>,
 ) -> Result<(), String> {
-    let fail = |msg: String| {
-        emit_progress(&window, "error", 0, &msg);
-        Err(msg)
+    // Every failure names the stage it happened in (TST-19).
+    let fail = |stage: &str, msg: String| {
+        let full = format!("{}: {}", stage, msg);
+        emit_progress(&window, "error", 0, &full);
+        Err(full)
     };
 
     emit_progress(
         &window,
-        "downloading",
-        10,
-        "Downloading firmware update from GitHub...",
+        "checking",
+        5,
+        "Checking your Pal and the latest release...",
     );
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .user_agent("CubiPal-Desktop")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let plan = match plan_update(false).await {
+        Ok(p) => p,
+        Err(e) => return fail("Update check failed", e),
+    };
+    let Some(build) = plan.build else {
+        let reason = plan
+            .info
+            .blocked_reason
+            .unwrap_or_else(|| "Your Pal is already up to date.".to_string());
+        return fail("Update not started", reason);
+    };
+    let chip = plan.info.chip.unwrap_or_default();
 
-    let (ip, token) = crate::device::get_saved_device_credentials()
-        .ok_or_else(|| "No CubiPal is currently paired.".to_string())?;
-
-    // Check device state
-    if let Err(err_msg) = check_device_idle(&client, &ip, &token, force.unwrap_or(false)).await {
-        return fail(err_msg);
+    let target = match crate::device::paired_target().await {
+        Ok(t) => t,
+        Err(e) => return fail("Update not started", e),
+    };
+    let client = http_client(Duration::from_secs(5))?;
+    if let Err(msg) =
+        check_device_idle(&client, &target.ip, &target.token, force.unwrap_or(false)).await
+    {
+        return fail("Update not started", msg);
     }
 
-    let Some(release) = latest_release(false).await? else {
-        return fail("Couldn't find the latest firmware release on GitHub. Check your internet connection and try again.".to_string());
+    emit_progress(
+        &window,
+        "downloading",
+        15,
+        &format!(
+            "Downloading firmware v{} from cubipal.com...",
+            build.version
+        ),
+    );
+    let bytes = match download_image(&build).await {
+        Ok(b) => b,
+        Err(e) => return fail("Download failed", e),
     };
 
-    let download = client
-        .get(&release.bin_url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status());
-    let bin_bytes = match download {
-        Ok(resp) => match resp.bytes().await {
-            Ok(b) => b.to_vec(),
-            Err(e) => return fail(format!("Failed to read firmware data: {}", e)),
-        },
-        Err(e) => return fail(format!("Failed to download firmware: {}", e)),
-    };
-
-    if let Err(msg) = check_esp_image(&bin_bytes) {
-        return fail(msg);
+    emit_progress(
+        &window,
+        "verifying",
+        35,
+        "Checking the download (size and SHA-256)...",
+    );
+    if let Err(msg) = verify_image(&bytes, &build, &chip) {
+        return fail("Download check failed, nothing was sent to your Pal", msg);
     }
-
-    // Verify SHA-256 integrity when the release publishes a checksum
-    let verified = match release.sha256 {
-        Some(ref expected) => {
-            emit_progress(
-                &window,
-                "verifying",
-                35,
-                "Verifying firmware integrity (SHA-256)...",
-            );
-            let computed_hash = format!("{:x}", Sha256::digest(&bin_bytes));
-            if computed_hash != *expected {
-                return fail(format!(
-                    "Security check failed: firmware SHA-256 mismatch (expected {}, got {}). Aborting update.",
-                    expected, computed_hash
-                ));
-            }
-            true
-        }
-        None => false,
-    };
 
     emit_progress(
         &window,
         "uploading",
         45,
-        if verified {
-            "Uploading verified firmware to CubiPal over Wi-Fi..."
-        } else {
-            "No checksum was published for this release, so the download could not be verified. Uploading to CubiPal over Wi-Fi..."
-        },
+        "Uploading verified firmware to your Pal over Wi-Fi...",
     );
-    flash_firmware_bytes(&window, &ip, &token, bin_bytes).await
-}
-
-#[tauri::command]
-pub async fn install_local_firmware(
-    window: tauri::Window,
-    file_path: String,
-    force: Option<bool>,
-) -> Result<(), String> {
-    emit_progress(&window, "downloading", 10, "Reading local firmware file...");
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let (ip, token) = crate::device::get_saved_device_credentials()
-        .ok_or_else(|| "No CubiPal is currently paired.".to_string())?;
-
-    if let Err(err_msg) = check_device_idle(&client, &ip, &token, force.unwrap_or(false)).await {
-        emit_progress(&window, "error", 0, &err_msg);
-        return Err(err_msg);
+    match flash_firmware_bytes(&window, &target, bytes).await {
+        Ok(()) => Ok(()),
+        Err(e) => fail("Upload to your Pal failed", e),
     }
-
-    let bin_bytes = tokio::fs::read(&file_path)
-        .await
-        .map_err(|e| format!("Failed to read file '{}': {}", file_path, e))?;
-
-    if let Err(msg) = check_esp_image(&bin_bytes) {
-        emit_progress(&window, "error", 0, &msg);
-        return Err(msg);
-    }
-
-    emit_progress(
-        &window,
-        "uploading",
-        40,
-        "Uploading to CubiPal over Wi-Fi...",
-    );
-    flash_firmware_bytes(&window, &ip, &token, bin_bytes).await
 }
 
 async fn flash_firmware_bytes(
     window: &tauri::Window,
-    ip: &str,
-    token: &str,
+    target: &crate::device::Target,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
     let part = reqwest::multipart::Part::bytes(bytes)
@@ -498,53 +520,46 @@ async fn flash_firmware_bytes(
 
     let form = reqwest::multipart::Form::new().part("fw", part);
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = http_client(Duration::from_secs(90))?;
 
     emit_progress(
         window,
         "uploading",
         70,
-        "Writing firmware to CubiPal flash slot...",
+        "Writing firmware to your Pal's spare flash slot...",
     );
 
     let res = client
-        .post(format!("http://{}/api/update", ip))
-        .header("Authorization", format!("Bearer {}", token))
+        .post(format!("http://{}/api/update", target.ip))
+        .bearer_auth(&target.token)
         .header("X-Pet", "1")
         .multipart(form)
         .send()
         .await
-        .map_err(|e| format!("Upload failed: {}", e))?;
+        .map_err(crate::device::reach_error)?;
 
     if res.status().is_success() {
         emit_progress(
             window,
             "rebooting",
             95,
-            "Flashing complete. CubiPal is rebooting...",
+            "Flashing complete. Your Pal is restarting...",
         );
         tokio::time::sleep(Duration::from_millis(2000)).await;
         emit_progress(
             window,
             "completed",
             100,
-            "Update successful! CubiPal has restarted.",
+            "Update successful! Your Pal has restarted.",
         );
         Ok(())
     } else {
-        let msg = if res.status().as_u16() == 409 {
-            "Device rejected update: a timer is active on CubiPal.".to_string()
-        } else {
-            format!(
-                "Device rejected update (HTTP {}). Working firmware is untouched.",
-                res.status()
-            )
-        };
-        emit_progress(window, "error", 0, &msg);
-        Err(msg)
+        // The Pal explains itself in {"ok":false,"msg":...}; its working
+        // firmware is untouched when it refuses.
+        Err(format!(
+            "{} Its current firmware is untouched.",
+            crate::device::device_error(res).await
+        ))
     }
 }
 
@@ -563,147 +578,172 @@ fn emit_progress(window: &tauri::Window, stage: &str, percent: u8, message: &str
 mod tests {
     use super::*;
 
-    fn asset(name: &str) -> GithubAsset {
-        GithubAsset {
-            name: name.to_string(),
-            browser_download_url: format!("https://example.invalid/{name}"),
-        }
+    const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn latest(json_builds: &str) -> LatestRelease {
+        parse_latest_json(&format!(
+            r#"{{"version":"1.1.0","released":"2026-11-12T00:00:00Z","notes_url":"https://cubipal.com/firmware/1.1.0/NOTES.md","builds":{json_builds}}}"#
+        ))
+        .unwrap()
     }
 
-    fn release_assets(factory_first: bool) -> Vec<GithubAsset> {
-        let mut v = vec![
-            asset("CubiPal-firmware-v1.2.0.bin"),
-            asset("CubiPal-factory-v1.2.0.bin"),
-            asset("manifest.json"),
-            asset("sha256sums.txt"),
-        ];
-        if factory_first {
-            v.swap(0, 1);
-        }
+    fn contract_release() -> LatestRelease {
+        latest(&format!(
+            r#"{{
+              "esp32s3": {{
+                "ota":     {{ "url": "https://cubipal.com/firmware/1.1.0/cubipal-esp32s3-1.1.0.bin", "sha256": "{SHA_A}", "size": 1178515 }},
+                "factory": {{ "url": "https://cubipal.com/firmware/1.1.0/cubipal-esp32s3-1.1.0-factory.bin", "sha256": "{SHA_A}", "size": 0 }}
+              }},
+              "esp32": {{
+                "ota":     {{ "url": "https://cubipal.com/firmware/1.1.0/cubipal-esp32-1.1.0.bin", "sha256": "{}", "size": 1217141 }}
+              }}
+            }}"#,
+            SHA_A.to_uppercase()
+        ))
+    }
+
+    #[test]
+    fn picks_the_ota_build_for_the_chip() {
+        let r = contract_release();
+        let s3 = select_build(&r, "esp32s3").unwrap();
+        assert_eq!(
+            s3.url,
+            "https://cubipal.com/firmware/1.1.0/cubipal-esp32s3-1.1.0.bin"
+        );
+        assert_eq!(s3.size, 1_178_515);
+        assert_eq!(s3.version, "1.1.0");
+        let classic = select_build(&r, "esp32").unwrap();
+        assert!(classic.url.ends_with("cubipal-esp32-1.1.0.bin"));
+        assert_eq!(classic.sha256, SHA_A, "hash is normalised to lowercase");
+        assert!(select_build(&r, "esp32c3").is_err());
+    }
+
+    #[test]
+    fn rejects_bad_build_entries() {
+        let entry = |url: &str, sha: &str, size: u64| {
+            latest(&format!(
+                r#"{{"esp32":{{"ota":{{"url":"{url}","sha256":"{sha}","size":{size}}}}}}}"#
+            ))
+        };
+        let ok = "https://cubipal.com/firmware/1.1.0/cubipal-esp32-1.1.0.bin";
+        assert!(select_build(&entry(ok, SHA_A, 10), "esp32").is_ok());
+        assert!(select_build(&entry("https://evil.example/x.bin", SHA_A, 10), "esp32").is_err());
+        assert!(
+            select_build(
+                &entry("https://cubipal.com/firmware/../x.bin", SHA_A, 10),
+                "esp32"
+            )
+            .is_err()
+        );
+        assert!(
+            select_build(
+                &entry("http://cubipal.com/firmware/x.bin", SHA_A, 10),
+                "esp32"
+            )
+            .is_err()
+        );
+        assert!(select_build(&entry(ok, "", 10), "esp32").is_err());
+        assert!(select_build(&entry(ok, &SHA_A[..63], 10), "esp32").is_err());
+        assert!(select_build(&entry(ok, SHA_A, 0), "esp32").is_err());
+        assert!(select_build(&entry(ok, SHA_A, MAX_IMAGE_BYTES + 1), "esp32").is_err());
+        // An entry with only a factory image has no OTA build.
+        let r = latest(&format!(
+            r#"{{"esp32":{{"factory":{{"url":"{ok}","sha256":"{SHA_A}","size":10}}}}}}"#
+        ));
+        assert!(select_build(&r, "esp32").is_err());
+    }
+
+    #[test]
+    fn latest_json_must_have_a_semver_version() {
+        assert!(parse_latest_json(r#"{"version":"1.1.0","builds":{}}"#).is_ok());
+        assert!(parse_latest_json(r#"{"version":"v1.2.0-rc.1"}"#).is_ok());
+        assert!(parse_latest_json(r#"{"version":"1 Nov 12 2026","builds":{}}"#).is_err());
+        assert!(parse_latest_json("<html>").is_err());
+    }
+
+    #[test]
+    fn semver_comparison_follows_the_contract() {
+        assert!(is_update_available("1.0.1", Some("1.0.0")));
+        assert!(!is_update_available("1.0.0", Some("1.0.0")));
+        assert!(is_update_available("1.10.0", Some("1.9.9")));
+        assert!(!is_update_available("1.9.9", Some("1.10.0")));
+        assert!(is_update_available("2.0.0", Some("v1.9.0")));
+        // A prerelease ranks below its release.
+        assert!(is_update_available("1.1.0", Some("1.1.0-rc.1")));
+        assert!(!is_update_available("1.1.0-rc.1", Some("1.1.0")));
+        assert!(is_update_available("1.1.0-rc.2", Some("1.1.0-rc.1")));
+        // Build metadata is ignored: a dev build equals its release.
+        assert!(!is_update_available("1.1.0", Some("1.1.0+3.gabc1234")));
+        assert!(!is_update_available(
+            "1.1.0",
+            Some("1.1.0+3.gabc1234.dirty")
+        ));
+        assert!(is_update_available("1.1.1", Some("1.1.0+3.gabc1234")));
+        // Legacy, unknown or missing versions are older than any release.
+        assert!(is_update_available("1.1.0", Some("1 Nov 12 2026")));
+        assert!(is_update_available("1.1.0", Some("")));
+        assert!(is_update_available("1.1.0", None));
+        assert!(is_update_available("1.1.0", Some("0.0.0-dev")));
+        // A bad "latest" is never offered.
+        assert!(!is_update_available("", Some("1.0.0")));
+        assert!(!is_update_available("garbage", None));
+    }
+
+    #[test]
+    fn version_labels() {
+        assert_eq!(version_label(Some("1.1.0")), "v1.1.0");
+        assert_eq!(version_label(Some("v1.1.0")), "v1.1.0");
+        assert_eq!(version_label(Some("1.1.0+3.gabc")), "v1.1.0+3.gabc");
+        assert_eq!(version_label(Some("1 Nov 12 2026")), "unknown version");
+        assert_eq!(version_label(Some("")), "unknown version");
+        assert_eq!(version_label(None), "unknown version");
+    }
+
+    fn image(chip_id: u16, len: usize) -> Vec<u8> {
+        let mut v = vec![0u8; len.max(16)];
+        v[0] = 0xE9;
+        v[12..14].copy_from_slice(&chip_id.to_le_bytes());
         v
     }
 
     #[test]
-    fn selects_ota_image_never_factory_in_either_order() {
-        for factory_first in [false, true] {
-            let assets = release_assets(factory_first);
-            let picked = select_firmware_asset(&assets, None).unwrap();
-            assert_eq!(picked.name, "CubiPal-firmware-v1.2.0.bin");
-            let picked = select_firmware_asset(&assets, Some("CubiPal-firmware-v1.2.0.bin"));
-            assert_eq!(picked.unwrap().name, "CubiPal-firmware-v1.2.0.bin");
-        }
+    fn esp_image_header_is_checked() {
+        assert!(check_esp_image(&image(0x0009, 32), Some("esp32s3")).is_ok());
+        assert!(check_esp_image(&image(0x0000, 32), Some("esp32")).is_ok());
+        // The other board's image is refused.
+        assert!(check_esp_image(&image(0x0000, 32), Some("esp32s3")).is_err());
+        assert!(check_esp_image(&image(0x0009, 32), Some("esp32")).is_err());
+        assert!(check_esp_image(&[0xFF, 0xFF], None).is_err());
+        assert!(check_esp_image(b"<!DOCTYPE html>", None).is_err());
+        assert!(check_esp_image(&[], None).is_err());
+        assert!(check_esp_image(&[0xE9, 0x03], Some("esp32")).is_err());
     }
 
     #[test]
-    fn manifest_cannot_point_at_factory_or_merged_image() {
-        let assets = vec![
-            asset("CubiPal-merged-v1.bin"),
-            asset("CubiPal-factory-v1.bin"),
-            asset("CubiPal-firmware-v1.bin"),
-        ];
-        let picked = select_firmware_asset(&assets, Some("CubiPal-factory-v1.bin")).unwrap();
-        assert_eq!(picked.name, "CubiPal-firmware-v1.bin");
-    }
-
-    #[test]
-    fn manifest_named_file_is_preferred() {
-        let assets = vec![asset("CubiPal-firmware-old.bin"), asset("app-s3.BIN")];
-        let picked = select_firmware_asset(&assets, Some("app-s3.bin")).unwrap();
-        assert_eq!(picked.name, "app-s3.BIN");
-    }
-
-    #[test]
-    fn no_ota_image_gives_none() {
-        let assets = vec![asset("CubiPal-factory-v1.bin"), asset("manifest.json")];
-        assert!(select_firmware_asset(&assets, None).is_none());
-        assert!(select_firmware_asset(&[], None).is_none());
-    }
-
-    #[test]
-    fn finds_manifest_asset() {
-        assert!(find_manifest_asset(&[asset("foo-manifest.json")]).is_some());
-        assert!(find_manifest_asset(&[asset("Manifest.JSON")]).is_some());
-        assert!(find_manifest_asset(&[asset("manifest.json.sig")]).is_none());
-    }
-
-    #[test]
-    fn selects_matching_sha_asset() {
-        let assets = vec![
-            asset("CubiPal-factory-v1.bin.sha256"),
-            asset("CubiPal-firmware-v1.bin.sha256"),
-        ];
-        let picked = select_sha_asset(&assets, "CubiPal-firmware-v1.bin").unwrap();
-        assert_eq!(picked.name, "CubiPal-firmware-v1.bin.sha256");
-        let assets = release_assets(false);
-        let picked = select_sha_asset(&assets, "CubiPal-firmware-v1.2.0.bin").unwrap();
-        assert_eq!(picked.name, "sha256sums.txt");
-    }
-
-    #[test]
-    fn parses_sha256sums_for_the_right_file() {
-        let a = "a".repeat(64);
-        let b = "B".repeat(64);
-        let text = format!("{b}  CubiPal-factory-v1.2.0.bin\n{a}  CubiPal-firmware-v1.2.0.bin\n");
-        assert_eq!(
-            parse_sha256_text(&text, "CubiPal-firmware-v1.2.0.bin"),
-            Some(a.clone())
+    fn downloads_are_verified_by_size_and_hash() {
+        let bytes = image(0x0009, 64);
+        let sha = format!("{:x}", Sha256::digest(&bytes));
+        let build = OtaBuild {
+            version: "1.1.0".into(),
+            url: "https://cubipal.com/firmware/1.1.0/x.bin".into(),
+            sha256: sha.clone(),
+            size: 64,
+        };
+        assert!(verify_image(&bytes, &build, "esp32s3").is_ok());
+        assert!(verify_image(&bytes, &build, "esp32").is_err());
+        let wrong_size = OtaBuild {
+            size: 65,
+            ..build.clone()
+        };
+        assert!(verify_image(&bytes, &wrong_size, "esp32s3").is_err());
+        let wrong_hash = OtaBuild {
+            sha256: SHA_A.into(),
+            ..build
+        };
+        assert!(
+            verify_image(&bytes, &wrong_hash, "esp32s3")
+                .unwrap_err()
+                .contains("SHA-256")
         );
-        assert_eq!(
-            parse_sha256_text(&text, "CubiPal-factory-v1.2.0.bin"),
-            Some(b.to_lowercase())
-        );
-        // binary-mode marker and bare hash
-        let text = format!("{a} *CubiPal-firmware-v1.2.0.bin");
-        assert_eq!(
-            parse_sha256_text(&text, "CubiPal-firmware-v1.2.0.bin"),
-            Some(a.clone())
-        );
-        assert_eq!(
-            parse_sha256_text(&format!("{b}\n"), "x.bin"),
-            Some(b.to_lowercase())
-        );
-        // wrong lengths and other files are rejected
-        assert_eq!(parse_sha256_text(&"a".repeat(63), "x.bin"), None);
-        assert_eq!(parse_sha256_text(&"a".repeat(65), "x.bin"), None);
-        assert_eq!(parse_sha256_text(&format!("{a}  other.bin"), "x.bin"), None);
-        assert_eq!(parse_sha256_text("", "x.bin"), None);
-    }
-
-    #[test]
-    fn manifest_from_release_workflow_deserializes() {
-        let json = r#"{
-            "version": "1.2.0",
-            "tag": "v1.2.0",
-            "firmware_file": "CubiPal-firmware-v1.2.0.bin",
-            "factory_file": "CubiPal-factory-v1.2.0.bin",
-            "sha256": "abc",
-            "min_desktop_version": "0.1.0",
-            "release_date": "2026-11-12"
-        }"#;
-        let m: FirmwareManifest = serde_json::from_str(json).unwrap();
-        assert_eq!(m.version.as_deref(), Some("1.2.0"));
-        assert_eq!(
-            m.firmware_file.as_deref(),
-            Some("CubiPal-firmware-v1.2.0.bin")
-        );
-        assert_eq!(m.sha256.as_deref(), Some("abc"));
-    }
-
-    #[test]
-    fn esp_image_magic_is_checked() {
-        assert!(check_esp_image(&[0xE9, 0x03, 0x02]).is_ok());
-        assert!(check_esp_image(&[0xFF, 0xFF]).is_err());
-        assert!(check_esp_image(b"<!DOCTYPE html>").is_err());
-        assert!(check_esp_image(&[]).is_err());
-    }
-
-    #[test]
-    fn version_compare() {
-        assert!(is_version_newer("1.0.1", "1.0.0"));
-        assert!(!is_version_newer("1.0.0", "1.0.0"));
-        assert!(is_version_newer("1.10.0", "1.9.9"));
-        assert!(!is_version_newer("1.9.9", "1.10.0"));
-        assert!(is_version_newer("2.0.0", "1.9.0"));
-        assert!(!is_version_newer("", "1.0.0"));
     }
 }

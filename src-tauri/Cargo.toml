@@ -29,6 +29,7 @@ base64 = "0.22"
 rand = "0.8"
 url = "2"
 open = "5"
+semver = "1"
 
 [profile.release]
 codegen-units = 1

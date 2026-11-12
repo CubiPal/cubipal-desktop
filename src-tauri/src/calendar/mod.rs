@@ -326,51 +326,8 @@ struct DevicePushPayload {
 }
 
 #[tauri::command]
-pub async fn push_events_to_device(
-    events: Vec<CalendarEvent>,
-    lead_time_min: u8,
-) -> Result<bool, String> {
-    let (ip, token) = match crate::device::get_saved_device_credentials() {
-        Some(creds) => creds,
-        None => return Ok(false),
-    };
-
-    let push_events: Vec<DevicePushEvent> = events
-        .into_iter()
-        .take(2)
-        .map(|e| DevicePushEvent::from_event(&e, lead_time_min))
-        .collect();
-
-    let payload = DevicePushPayload {
-        events: push_events,
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let res = client
-        .put(format!("http://{}/api/events", ip))
-        .header("Authorization", format!("Bearer {}", token))
-        .header("X-Pet", "1")
-        .header("Content-Type", "application/json")
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to reach CubiPal: {}", e))?;
-
-    if res.status().is_success() {
-        Ok(true)
-    } else {
-        Err(format!("Device returned HTTP {}", res.status()))
-    }
-}
-
-#[tauri::command]
 pub async fn test_device_chime() -> Result<(), String> {
-    let (ip, token) = crate::device::get_saved_device_credentials()
-        .ok_or_else(|| "No CubiPal is currently paired.".to_string())?;
+    let target = crate::device::paired_target().await?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -378,18 +335,18 @@ pub async fn test_device_chime() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     let res = client
-        .post(format!("http://{}/api/message", ip))
-        .header("Authorization", format!("Bearer {}", token))
+        .post(format!("http://{}/api/message", target.ip))
+        .bearer_auth(&target.token)
         .header("X-Pet", "1")
         .form(&[("text", "Meeting Chime Test")])
         .send()
         .await
-        .map_err(|e| format!("Failed to reach CubiPal: {}", e))?;
+        .map_err(crate::device::reach_error)?;
 
     if res.status().is_success() {
         Ok(())
     } else {
-        Err(format!("Device returned HTTP {}", res.status()))
+        Err(crate::device::device_error(res).await)
     }
 }
 
