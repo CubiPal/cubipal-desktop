@@ -54,10 +54,11 @@ pub async fn start_microsoft_auth(client_id: &str) -> Result<(String, String), S
     let redirect_uri = server.redirect_uri();
 
     let auth_url = format!(
-        "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id={}&redirect_uri={}&response_type=code&scope=Calendars.Read%20offline_access&code_challenge={}&code_challenge_method=S256&prompt=select_account",
+        "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id={}&redirect_uri={}&response_type=code&scope=Calendars.Read%20offline_access&code_challenge={}&code_challenge_method=S256&state={}&prompt=select_account",
         client_id,
         url_encode(&redirect_uri),
-        pkce.challenge
+        pkce.challenge,
+        server.state
     );
 
     open::that(&auth_url).map_err(|e| format!("Could not open browser: {}", e))?;

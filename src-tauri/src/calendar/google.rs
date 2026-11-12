@@ -45,10 +45,11 @@ pub async fn start_google_auth(client_id: &str) -> Result<(String, String), Stri
     let redirect_uri = server.redirect_uri();
 
     let auth_url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https://www.googleapis.com/auth/calendar.readonly&code_challenge={}&code_challenge_method=S256&access_type=offline&prompt=consent",
+        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https://www.googleapis.com/auth/calendar.readonly&code_challenge={}&code_challenge_method=S256&state={}&access_type=offline&prompt=consent",
         client_id,
         url_encode(&redirect_uri),
-        pkce.challenge
+        pkce.challenge,
+        server.state
     );
 
     // Open user's default browser
