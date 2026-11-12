@@ -2,6 +2,7 @@ use keyring::Entry;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 const KEYRING_SERVICE: &str = "cubipal";
@@ -43,12 +44,27 @@ pub struct PairResponse {
     pub msg: Option<String>,
 }
 
+const MDNS_SERVICE: &str = "_cubipal._tcp.local.";
+
+/// Browses for Pals for 3 s. The mDNS receiver blocks, so it runs on a
+/// blocking thread rather than a tokio worker.
 #[tauri::command]
 pub async fn scan_for_pals() -> Result<Vec<DiscoveredPal>, String> {
+    tokio::task::spawn_blocking(scan_for_pals_blocking)
+        .await
+        .map_err(|e| format!("Scan failed: {}", e))?
+}
+
+fn scan_for_pals_blocking() -> Result<Vec<DiscoveredPal>, String> {
     let mdns = ServiceDaemon::new().map_err(|e| e.to_string())?;
-    let receiver = mdns
-        .browse("_cubipal._tcp.local.")
-        .map_err(|e| e.to_string())?;
+    let result = browse_pals(&mdns);
+    // Stop the daemon's thread and sockets; one is created per scan.
+    let _ = mdns.shutdown();
+    result
+}
+
+fn browse_pals(mdns: &ServiceDaemon) -> Result<Vec<DiscoveredPal>, String> {
+    let receiver = mdns.browse(MDNS_SERVICE).map_err(|e| e.to_string())?;
 
     let mut pals = HashMap::new();
     let start = std::time::Instant::now();
@@ -57,43 +73,63 @@ pub async fn scan_for_pals() -> Result<Vec<DiscoveredPal>, String> {
     while start.elapsed() < timeout {
         if let Ok(event) = receiver.recv_timeout(Duration::from_millis(250))
             && let ServiceEvent::ServiceResolved(info) = event
+            && let Some(ip) = pick_pal_address(info.get_addresses().iter())
         {
-            let addrs = info.get_addresses();
-            if let Some(ip) = addrs.iter().next() {
-                let id = info
-                    .get_property_val_str("id")
-                    .unwrap_or("unknown")
-                    .to_string();
-                let name = info
-                    .get_property_val_str("name")
-                    .unwrap_or("Cubi")
-                    .to_string();
-                let model = info
-                    .get_property_val_str("model")
-                    .unwrap_or("v6")
-                    .to_string();
-                let fw = info
-                    .get_property_val_str("fw")
-                    .unwrap_or("1.0.0")
-                    .to_string();
+            let id = info
+                .get_property_val_str("id")
+                .unwrap_or("unknown")
+                .to_string();
+            let name = info
+                .get_property_val_str("name")
+                .unwrap_or("Cubi")
+                .to_string();
+            let model = info
+                .get_property_val_str("model")
+                .unwrap_or("v6")
+                .to_string();
+            let fw = info
+                .get_property_val_str("fw")
+                .unwrap_or("1.0.0")
+                .to_string();
 
-                pals.insert(
-                    id.clone(),
-                    DiscoveredPal {
-                        id,
-                        name,
-                        ip: ip.to_string(),
-                        port: info.get_port(),
-                        model,
-                        fw,
-                    },
-                );
-            }
+            pals.insert(
+                id.clone(),
+                DiscoveredPal {
+                    id,
+                    name,
+                    ip,
+                    port: info.get_port(),
+                    model,
+                    fw,
+                },
+            );
         }
     }
 
-    let _ = mdns.stop_browse("_cubipal._tcp.local.");
+    let _ = mdns.stop_browse(MDNS_SERVICE);
     Ok(pals.into_values().collect())
+}
+
+/// Chooses the address the app will use in `http://{addr}/...` URLs: an IPv4
+/// address when there is one (lowest, for a stable choice), else a routable
+/// IPv6 address in brackets. Link-local IPv6 (`fe80::/10`) would need a scope
+/// id, so it is never used.
+fn pick_pal_address<'a>(addrs: impl Iterator<Item = &'a IpAddr>) -> Option<String> {
+    let mut v4 = None;
+    let mut v6 = None;
+    for addr in addrs {
+        match addr {
+            IpAddr::V4(a) if !a.is_unspecified() => {
+                v4 = Some(v4.map_or(*a, |b: std::net::Ipv4Addr| b.min(*a)));
+            }
+            IpAddr::V6(a) if !a.is_unspecified() && (a.segments()[0] & 0xffc0) != 0xfe80 => {
+                v6 = Some(v6.map_or(*a, |b: std::net::Ipv6Addr| b.min(*a)));
+            }
+            _ => {}
+        }
+    }
+    v4.map(|a| a.to_string())
+        .or_else(|| v6.map(|a| format!("[{}]", a)))
 }
 
 #[tauri::command]
@@ -308,4 +344,37 @@ pub fn clear_device_credentials() -> Result<(), String> {
         let _ = entry.delete_credential();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pick(addrs: &[&str]) -> Option<String> {
+        let parsed: Vec<IpAddr> = addrs.iter().map(|a| a.parse().unwrap()).collect();
+        pick_pal_address(parsed.iter())
+    }
+
+    #[test]
+    fn prefers_ipv4() {
+        assert_eq!(
+            pick(&["fe80::1", "192.168.1.20", "2001:db8::5"]),
+            Some("192.168.1.20".into())
+        );
+        assert_eq!(
+            pick(&["192.168.1.30", "192.168.1.20"]),
+            Some("192.168.1.20".into())
+        );
+    }
+
+    #[test]
+    fn falls_back_to_bracketed_routable_ipv6() {
+        assert_eq!(
+            pick(&["fe80::1", "2001:db8::5"]),
+            Some("[2001:db8::5]".into())
+        );
+        assert_eq!(pick(&["fe80::1"]), None);
+        assert_eq!(pick(&[]), None);
+        assert_eq!(pick(&["0.0.0.0"]), None);
+    }
 }
