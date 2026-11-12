@@ -131,13 +131,7 @@ async fn perform_sync_cycle(
     let push_events: Vec<DevicePushEvent> = events
         .iter()
         .take(2)
-        .map(|e| DevicePushEvent {
-            id: e.id.clone(),
-            title: e.title.clone(),
-            start: e.start,
-            end: e.end,
-            chime_lead_min: config.lead_time_min,
-        })
+        .map(|e| DevicePushEvent::from_event(e, config.lead_time_min))
         .collect();
 
     // 3. Update Tray Status & Upcoming Event
