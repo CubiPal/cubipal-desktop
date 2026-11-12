@@ -110,7 +110,7 @@
               </div>
               <div class="spec-item">
                 <span class="spec-label">Magnetic Skin</span>
-                <select id="spec-skin" class="skin-select" aria-label="Magnetic skin" style="font-size:12px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;margin-top:2px;" disabled>
+                <select id="spec-skin" class="skin-select" aria-label="Magnetic skin" style="font-size:12px;background:var(--bg-card);color:var(--text-main);border:1px solid var(--border-color);border-radius:4px;padding:2px 4px;margin-top:2px;" disabled>
                   <option value="robot">Robot (Default)</option>
                   <option value="capybara">Capybara</option>
                   <option value="tiger">Tiger</option>
@@ -367,6 +367,25 @@
         <div class="modal-footer">
           <button class="btn btn-secondary" id="btn-modal-cancel">Cancel</button>
           <button class="btn btn-primary" id="btn-modal-pair">Pair Pal</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Focus dialog (tray "Custom Focus...") -->
+    <div class="modal-backdrop hidden" id="focus-modal">
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="focus-modal-title">
+        <div class="modal-header">
+          <h4 id="focus-modal-title">Start a Focus Timer</h4>
+          <button type="button" class="modal-close" id="btn-focus-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <label for="input-focus-minutes" class="spec-label">Minutes (1&ndash;180)</label>
+          <input type="number" id="input-focus-minutes" class="code-input" min="1" max="180" step="1" value="25" inputmode="numeric" aria-describedby="focus-error-msg" />
+          <div class="error-msg hidden" id="focus-error-msg" role="alert"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btn-focus-cancel">Cancel</button>
+          <button class="btn btn-primary" id="btn-focus-start">Start Timer</button>
         </div>
       </div>
     </div>

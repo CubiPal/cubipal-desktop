@@ -32,10 +32,11 @@ impl Default for CalendarSyncConfig {
     }
 }
 
+/// Most events the Pal holds (firmware `MAX_CALENDAR_EVENTS`).
+const DEVICE_MAX_EVENTS: usize = 2;
+
 pub struct SyncEngine {
     trigger_tx: mpsc::Sender<()>,
-    #[allow(dead_code)]
-    pending_queue: Arc<Mutex<Option<Vec<DevicePushEvent>>>>,
 }
 
 static SYNC_ENGINE: Mutex<Option<SyncEngine>> = Mutex::const_new(None);
@@ -69,10 +70,10 @@ pub fn start_background_sync(app: AppHandle) {
     let (tx, mut rx) = mpsc::channel::<()>(8);
     let pending_queue = Arc::new(Mutex::new(None));
 
-    let engine = SyncEngine {
-        trigger_tx: tx,
-        pending_queue: pending_queue.clone(),
-    };
+    let engine = SyncEngine { trigger_tx: tx };
+    // The last event list fetched successfully, so a snooze or resume can
+    // still reach the Pal while a calendar is failing.
+    let last_good: Arc<Mutex<Option<Vec<CalendarEvent>>>> = Arc::new(Mutex::new(None));
 
     tauri::async_runtime::spawn(async move {
         *SYNC_ENGINE.lock().await = Some(engine);
@@ -80,22 +81,25 @@ pub fn start_background_sync(app: AppHandle) {
 
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut interval_5min = tokio::time::interval(Duration::from_secs(300));
-        let mut interval_retry = tokio::time::interval(Duration::from_secs(30));
-
-        // Initial sync on startup after 3 seconds
+        // Initial sync on startup after 3 seconds; the periodic sync starts
+        // one period later (an `interval` would also fire immediately).
         tokio::time::sleep(Duration::from_secs(3)).await;
-        perform_sync_cycle(&app_clone, &pending_queue).await;
+        perform_sync_cycle(&app_clone, &pending_queue, &last_good).await;
+
+        let period = Duration::from_secs(300);
+        let mut interval_5min =
+            tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        let mut interval_retry = tokio::time::interval(Duration::from_secs(30));
 
         loop {
             tokio::select! {
                 _ = rx.recv() => {
                     // Manual or event-triggered sync
-                    perform_sync_cycle(&app_clone, &pending_queue).await;
+                    perform_sync_cycle(&app_clone, &pending_queue, &last_good).await;
                 }
                 _ = interval_5min.tick() => {
                     // Periodic 5-minute background sync
-                    perform_sync_cycle(&app_clone, &pending_queue).await;
+                    perform_sync_cycle(&app_clone, &pending_queue, &last_good).await;
                 }
                 _ = interval_retry.tick() => {
                     // Fast 30s retry if device was offline and has queued events
@@ -109,6 +113,7 @@ pub fn start_background_sync(app: AppHandle) {
 async fn perform_sync_cycle(
     app: &AppHandle,
     pending_queue: &Arc<Mutex<Option<Vec<DevicePushEvent>>>>,
+    last_good: &Arc<Mutex<Option<Vec<CalendarEvent>>>>,
 ) {
     let config = get_saved_calendar_config();
     let sync_settings = CalendarSyncSettings {
@@ -119,22 +124,32 @@ async fn perform_sync_cycle(
 
     // 1. Fetch and filter events
     let events = match super::sync_calendar_events(sync_settings).await {
-        Ok(evts) => evts,
+        Ok(evts) => {
+            *last_good.lock().await = Some(evts.clone());
+            let _ = app.emit("calendar-events-updated", &evts);
+            evts
+        }
         Err(e) => {
-            // Keep the last good event set on the Pal; an error is not "no meetings".
-            eprintln!("[SyncEngine] Failed to sync calendars, not pushing: {}", e);
-            return;
+            // An error is not "no meetings": keep the last good event set
+            // (re-pushed so a snooze or resume still reaches the Pal), or
+            // push nothing if there never was one.
+            eprintln!("[SyncEngine] Failed to sync calendars: {}", e);
+            let _ = app.emit("calendar-sync-error", &e);
+            let now = Utc::now().timestamp();
+            match last_good.lock().await.as_ref() {
+                Some(evts) => evts.iter().filter(|e| e.end > now).cloned().collect(),
+                None => return,
+            }
         }
     };
 
-    let _ = app.emit("calendar-events-updated", &events);
-
-    // 2. Format next 2 events for CubiPal
-    let push_events: Vec<DevicePushEvent> = events
-        .iter()
-        .take(2)
-        .map(|e| DevicePushEvent::from_event(e, config.lead_time_min))
-        .collect();
+    // 2. Format the next events for CubiPal, holding back alerts while snoozed
+    let push_events = crate::snooze::push_events(
+        &events,
+        config.lead_time_min,
+        crate::snooze::snoozed_until(),
+        DEVICE_MAX_EVENTS,
+    );
 
     // 3. Update Tray Status & Upcoming Event (full titles; the tray can show Unicode)
     update_tray_display(&events);

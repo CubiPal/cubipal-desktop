@@ -459,7 +459,7 @@ body {
 }
 
 .text-danger {
-  color: var(--danger);
+  color: var(--danger-color);
 }
 
 .text-sm {

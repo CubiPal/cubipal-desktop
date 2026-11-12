@@ -108,6 +108,7 @@ let lastFirmwareCheckVersion: string | undefined;
 document.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
   setupPairingModal();
+  setupFocusModal();
   setupActionButtons();
   setupCalendarTab();
   setupRemindersTab();
@@ -845,8 +846,69 @@ async function setupTrayListeners() {
     await offerDesktopUpdate(event.payload, false);
   });
 
-  await listen<number>("snooze-alerts", () => {
-    alert("Meeting reminders snoozed for 1 hour on your CubiPal.");
+  // Tray "Custom Focus...": ask for the minutes, then start the Pal's timer.
+  await listen("custom-focus", () => openFocusModal());
+}
+
+// --------------------------------------------------------------------------
+// Custom Focus dialog (TST-15)
+// --------------------------------------------------------------------------
+
+function openFocusModal() {
+  const modal = document.getElementById("focus-modal")!;
+  const input = document.getElementById("input-focus-minutes") as HTMLInputElement;
+  const errorMsg = document.getElementById("focus-error-msg")!;
+  errorMsg.classList.add("hidden");
+  modal.classList.remove("hidden");
+  setTimeout(() => {
+    input.focus();
+    input.select();
+  }, 50);
+}
+
+function setupFocusModal() {
+  const modal = document.getElementById("focus-modal")!;
+  const input = document.getElementById("input-focus-minutes") as HTMLInputElement;
+  const errorMsg = document.getElementById("focus-error-msg")!;
+  const btnStart = document.getElementById("btn-focus-start") as HTMLButtonElement;
+
+  const close = () => {
+    modal.classList.add("hidden");
+    btnStart.disabled = false;
+  };
+  const showError = (msg: string) => {
+    errorMsg.textContent = msg;
+    errorMsg.classList.remove("hidden");
+  };
+
+  document.getElementById("btn-focus-close")!.addEventListener("click", close);
+  document.getElementById("btn-focus-cancel")!.addEventListener("click", close);
+  modal.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    } else if (e.key === "Enter" && e.target === input && !btnStart.disabled) {
+      e.preventDefault();
+      btnStart.click();
+    }
+  });
+
+  btnStart.addEventListener("click", async () => {
+    const minutes = Number(input.value);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) {
+      showError("Enter a whole number of minutes from 1 to 180.");
+      return;
+    }
+    btnStart.disabled = true;
+    errorMsg.classList.add("hidden");
+    try {
+      await invoke("start_device_timer", { minutes, label: "Focus" });
+      close();
+      await refreshDeviceStatus();
+    } catch (err) {
+      showError(`Couldn't start the timer: ${err}`);
+      btnStart.disabled = false;
+    }
   });
 }
 

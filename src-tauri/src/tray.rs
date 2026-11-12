@@ -8,7 +8,11 @@ use tauri::{
 pub struct TrayMenuItems {
     pub status: MenuItem<tauri::Wry>,
     pub next_event: MenuItem<tauri::Wry>,
+    pub snooze: MenuItem<tauri::Wry>,
+    pub resume: MenuItem<tauri::Wry>,
 }
+
+const SNOOZE_LABEL: &str = "Snooze Alerts (1 hour)";
 
 pub static TRAY_ITEMS: Mutex<Option<TrayMenuItems>> = Mutex::new(None);
 
@@ -17,6 +21,30 @@ pub fn update_tray_status(text: &str) {
         && let Some(items) = guard.as_ref()
     {
         let _ = items.status.set_text(text);
+    }
+}
+
+/// Shows the snooze state: "Alerts snoozed until 14:05" plus an enabled
+/// "Resume Alerts", or the normal snooze item.
+pub fn show_snooze(until: Option<i64>) {
+    if let Ok(guard) = TRAY_ITEMS.lock()
+        && let Some(items) = guard.as_ref()
+    {
+        match until.and_then(|t| chrono::DateTime::from_timestamp(t, 0)) {
+            Some(t) => {
+                let local = t.with_timezone(&chrono::Local);
+                let _ = items
+                    .snooze
+                    .set_text(format!("Alerts snoozed until {}", local.format("%H:%M")));
+                let _ = items.snooze.set_enabled(false);
+                let _ = items.resume.set_enabled(true);
+            }
+            None => {
+                let _ = items.snooze.set_text(SNOOZE_LABEL);
+                let _ = items.snooze.set_enabled(true);
+                let _ = items.resume.set_enabled(false);
+            }
+        }
     }
 }
 
@@ -39,10 +67,16 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         None::<&str>,
     )?;
 
+    let snooze_item = MenuItem::with_id(app, "snooze", SNOOZE_LABEL, true, None::<&str>)?;
+    let resume_item =
+        MenuItem::with_id(app, "resume_alerts", "Resume Alerts", false, None::<&str>)?;
+
     if let Ok(mut guard) = TRAY_ITEMS.lock() {
         *guard = Some(TrayMenuItems {
             status: status_item.clone(),
             next_event: next_event_item.clone(),
+            snooze: snooze_item.clone(),
+            resume: resume_item.clone(),
         });
     }
 
@@ -66,8 +100,6 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         &[&timer_30, &timer_60, &timer_custom, &timer_cancel],
     )?;
 
-    let snooze_item =
-        MenuItem::with_id(app, "snooze", "Snooze Alerts (1 hour)", true, None::<&str>)?;
     let sync_item = MenuItem::with_id(app, "sync_now", "Sync Calendars Now", true, None::<&str>)?;
 
     let open_web_item = MenuItem::with_id(
@@ -101,6 +133,7 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             &timer_sub,
             &sep2,
             &snooze_item,
+            &resume_item,
             &sync_item,
             &sep3,
             &open_web_item,
@@ -153,18 +186,19 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "timer_custom" => {
+                // The window asks for the number of minutes.
                 show_preferences(app);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("custom-focus", ());
+                }
             }
             "timer_cancel" => {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.emit("start-timer", 0);
                 }
             }
-            "snooze" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.emit("snooze-alerts", 60);
-                }
-            }
+            "snooze" => crate::snooze::snooze(app, 60),
+            "resume_alerts" => crate::snooze::resume(app),
             "quit" => {
                 app.exit(0);
             }

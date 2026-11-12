@@ -2,6 +2,7 @@ mod calendar;
 mod device;
 mod ota;
 mod settings;
+mod snooze;
 mod tray;
 
 use std::time::Duration;
@@ -56,6 +57,10 @@ fn start_update_checker(app: tauri::AppHandle) {
                 && let Ok(updater) = app.updater()
                 && let Ok(Some(update)) = updater.check().await
             {
+                // Don't pop up while alerts are snoozed; offer it afterwards.
+                while snooze::is_snoozed() {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
                 let _ = app.emit(
                     "desktop-update-available",
                     serde_json::json!({
