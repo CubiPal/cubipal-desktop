@@ -184,33 +184,22 @@ pub async fn fetch_microsoft_events(
 
             let is_all_day = item.is_all_day.unwrap_or(false);
 
-            let start_epoch = item
+            // Skip events whose start can't be read instead of emitting epoch 0.
+            let Some(start_epoch) = item
                 .start
                 .as_ref()
-                .and_then(|s| s.date_time.as_ref())
-                .and_then(|dt| {
-                    DateTime::parse_from_rfc3339(dt).ok().or_else(|| {
-                        // Try parsing without timezone if sent as naive UTC
-                        chrono::NaiveDateTime::parse_from_str(dt, "%Y-%m-%dT%H:%M:%S")
-                            .ok()
-                            .map(|n| n.and_utc().fixed_offset())
-                    })
-                })
-                .map(|d| d.timestamp())
-                .unwrap_or(0);
+                .and_then(|s| s.date_time.as_deref())
+                .and_then(parse_graph_datetime)
+            else {
+                continue;
+            };
 
             let end_epoch = item
                 .end
                 .as_ref()
-                .and_then(|e| e.date_time.as_ref())
-                .and_then(|dt| {
-                    DateTime::parse_from_rfc3339(dt).ok().or_else(|| {
-                        chrono::NaiveDateTime::parse_from_str(dt, "%Y-%m-%dT%H:%M:%S")
-                            .ok()
-                            .map(|n| n.and_utc().fixed_offset())
-                    })
-                })
-                .map(|d| d.timestamp())
+                .and_then(|e| e.date_time.as_deref())
+                .and_then(parse_graph_datetime)
+                .filter(|&t| t > start_epoch)
                 .unwrap_or(start_epoch + 1800);
 
             events.push(CalendarEvent {
@@ -226,4 +215,53 @@ pub async fn fetch_microsoft_events(
     }
 
     Ok(events)
+}
+
+/// Parses a Graph `dateTime`. With `Prefer: outlook.timezone="UTC"` Graph sends
+/// naive UTC times with 7-digit fractional seconds, e.g.
+/// `2026-11-12T15:00:00.0000000`; RFC 3339 strings with an offset also work.
+fn parse_graph_datetime(dt: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(dt)
+        .map(|d| d.timestamp())
+        .ok()
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(dt, "%Y-%m-%dT%H:%M:%S%.f")
+                .ok()
+                .map(|n| n.and_utc().timestamp())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_graph_seven_digit_fraction() {
+        assert_eq!(
+            parse_graph_datetime("2026-11-01T15:00:00.0000000"),
+            Some(1_793_545_200)
+        );
+    }
+
+    #[test]
+    fn parses_other_graph_forms() {
+        assert_eq!(
+            parse_graph_datetime("2026-11-01T15:00:00"),
+            Some(1_793_545_200)
+        );
+        assert_eq!(
+            parse_graph_datetime("2026-11-01T15:00:00.5"),
+            Some(1_793_545_200)
+        );
+        assert_eq!(
+            parse_graph_datetime("2026-11-01T15:00:00Z"),
+            Some(1_793_545_200)
+        );
+        assert_eq!(
+            parse_graph_datetime("2026-11-01T16:00:00+01:00"),
+            Some(1_793_545_200)
+        );
+        assert_eq!(parse_graph_datetime(""), None);
+        assert_eq!(parse_graph_datetime("2026-11-01"), None);
+    }
 }

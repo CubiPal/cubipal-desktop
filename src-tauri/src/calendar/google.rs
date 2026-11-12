@@ -1,6 +1,6 @@
 use super::CalendarEvent;
 use super::oauth::{LoopbackServer, generate_pkce};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -169,34 +169,23 @@ pub async fn fetch_google_events(
                 .summary
                 .unwrap_or_else(|| "(Untitled Meeting)".to_string());
 
-            let (start_epoch, is_all_day) = match item.start {
-                Some(ref s) => {
-                    if let Some(ref dt_str) = s.date_time {
-                        let dt = DateTime::parse_from_rfc3339(dt_str)
-                            .map(|d| d.timestamp())
-                            .unwrap_or(0);
-                        (dt, false)
-                    } else if s.date.is_some() {
-                        (0, true)
-                    } else {
-                        (0, false)
-                    }
-                }
-                _ => (0, false),
+            // An event whose start can't be read is skipped rather than
+            // emitted at epoch 0 (which the "not ended" filter would drop anyway).
+            let Some((start_epoch, is_all_day)) = item
+                .start
+                .as_ref()
+                .and_then(|s| parse_google_time(s, &Local))
+            else {
+                continue;
             };
 
-            let end_epoch = match item.end {
-                Some(ref e) => {
-                    if let Some(ref dt_str) = e.date_time {
-                        DateTime::parse_from_rfc3339(dt_str)
-                            .map(|d| d.timestamp())
-                            .unwrap_or(start_epoch + 1800)
-                    } else {
-                        start_epoch + 1800
-                    }
-                }
-                _ => start_epoch + 1800,
-            };
+            let end_epoch = item
+                .end
+                .as_ref()
+                .and_then(|e| parse_google_time(e, &Local))
+                .map(|(t, _)| t)
+                .filter(|&t| t > start_epoch)
+                .unwrap_or(start_epoch + 1800);
 
             events.push(CalendarEvent {
                 id: item.id.unwrap_or_default(),
@@ -211,4 +200,64 @@ pub async fn fetch_google_events(
     }
 
     Ok(events)
+}
+
+/// Converts a Google `start`/`end` object to epoch seconds. Timed events use
+/// `dateTime` (RFC 3339); all-day events use `date`, which is midnight in the
+/// user's local time zone `tz` (the `end` date is exclusive).
+fn parse_google_time<Tz: TimeZone>(t: &GoogleDateTime, tz: &Tz) -> Option<(i64, bool)> {
+    if let Some(dt) = t.date_time.as_deref() {
+        return DateTime::parse_from_rfc3339(dt)
+            .ok()
+            .map(|d| (d.timestamp(), false));
+    }
+    let date = NaiveDate::parse_from_str(t.date.as_deref()?, "%Y-%m-%d").ok()?;
+    // Midnight can be skipped by a DST change in a few zones; fall back to 01:00.
+    [0, 1]
+        .into_iter()
+        .filter_map(|h| date.and_hms_opt(h, 0, 0))
+        .find_map(|naive| tz.from_local_datetime(&naive).earliest())
+        .map(|d| (d.timestamp(), true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::FixedOffset;
+
+    fn gdt(date_time: Option<&str>, date: Option<&str>) -> GoogleDateTime {
+        GoogleDateTime {
+            date_time: date_time.map(String::from),
+            date: date.map(String::from),
+        }
+    }
+
+    #[test]
+    fn parses_timed_events() {
+        let t = gdt(Some("2026-11-01T15:00:00Z"), None);
+        assert_eq!(parse_google_time(&t, &Utc), Some((1_793_545_200, false)));
+        let t = gdt(Some("2026-11-01T10:00:00-05:00"), None);
+        assert_eq!(parse_google_time(&t, &Utc), Some((1_793_545_200, false)));
+        assert_eq!(parse_google_time(&gdt(Some("garbage"), None), &Utc), None);
+    }
+
+    #[test]
+    fn parses_all_day_events_at_local_midnight() {
+        let t = gdt(None, Some("2026-11-01"));
+        assert_eq!(parse_google_time(&t, &Utc), Some((1_793_491_200, true)));
+        let pst = FixedOffset::west_opt(8 * 3600).unwrap();
+        assert_eq!(
+            parse_google_time(&t, &pst),
+            Some((1_793_491_200 + 8 * 3600, true))
+        );
+    }
+
+    #[test]
+    fn missing_or_bad_times_give_none() {
+        assert_eq!(parse_google_time(&gdt(None, None), &Utc), None);
+        assert_eq!(
+            parse_google_time(&gdt(None, Some("2026-13-01")), &Utc),
+            None
+        );
+    }
 }
