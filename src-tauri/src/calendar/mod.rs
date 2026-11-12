@@ -148,45 +148,63 @@ pub fn trigger_calendar_sync() -> Result<(), String> {
     Ok(())
 }
 
+fn read_secret(user: &str) -> Option<String> {
+    Entry::new(KEYRING_SERVICE, user)
+        .and_then(|e| e.get_password())
+        .ok()
+}
+
+/// Fetches every configured calendar. If any configured source fails the
+/// whole sync fails, so callers never mistake an error (expired token,
+/// network blip) for "no meetings" and wipe the events already on the Pal.
 #[tauri::command]
 pub async fn sync_calendar_events(
     settings: CalendarSyncSettings,
 ) -> Result<Vec<CalendarEvent>, String> {
     let mut all_events = Vec::new();
-    let now = Utc::now().timestamp();
+    let mut errors = Vec::new();
 
     // 1. Google Calendar
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_GOOGLE_REFRESH)
-        && let Ok(refresh) = entry.get_password()
-        && let Ok(events) =
-            google::fetch_google_events(google::GOOGLE_DEFAULT_CLIENT_ID, &refresh).await
-    {
-        all_events.extend(events);
+    if let Some(refresh) = read_secret(KEYRING_GOOGLE_REFRESH) {
+        match google::fetch_google_events(google::GOOGLE_DEFAULT_CLIENT_ID, &refresh).await {
+            Ok(events) => all_events.extend(events),
+            Err(e) => errors.push(format!("Google Calendar: {}", e)),
+        }
     }
 
     // 2. Microsoft 365
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_MICROSOFT_REFRESH)
-        && let Ok(refresh) = entry.get_password()
-        && let Ok(events) =
-            microsoft::fetch_microsoft_events(microsoft::MICROSOFT_DEFAULT_CLIENT_ID, &refresh)
-                .await
-    {
-        all_events.extend(events);
+    if let Some(refresh) = read_secret(KEYRING_MICROSOFT_REFRESH) {
+        match microsoft::fetch_microsoft_events(microsoft::MICROSOFT_DEFAULT_CLIENT_ID, &refresh)
+            .await
+        {
+            Ok(events) => all_events.extend(events),
+            Err(e) => errors.push(format!("Microsoft 365: {}", e)),
+        }
     }
 
     // 3. ICS Calendar Feed
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_ICS_URL)
-        && let Ok(url) = entry.get_password()
-        && let Ok(events) = ics::fetch_ics_events(&url).await
-    {
-        all_events.extend(events);
+    if let Some(url) = read_secret(KEYRING_ICS_URL) {
+        match ics::fetch_ics_events(&url).await {
+            Ok(events) => all_events.extend(events),
+            Err(e) => errors.push(format!("Calendar link: {}", e)),
+        }
     }
 
-    // Filter pipeline:
-    // - Must not have ended in the past
-    // - Skip all-day if toggle enabled
-    // - Skip tentative if toggle enabled
-    let mut filtered: Vec<CalendarEvent> = all_events
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+
+    Ok(filter_events(all_events, &settings, Utc::now().timestamp()))
+}
+
+/// Filter pipeline: drop events that have ended, optionally all-day and
+/// tentative ones; sort by start; apply Private Mode.
+fn filter_events(
+    events: Vec<CalendarEvent>,
+    settings: &CalendarSyncSettings,
+    now: i64,
+) -> Vec<CalendarEvent> {
+    let mut filtered: Vec<CalendarEvent> = events
         .into_iter()
         .filter(|e| e.end > now)
         .filter(|e| !settings.skip_all_day || !e.is_all_day)
@@ -203,7 +221,7 @@ pub async fn sync_calendar_events(
         }
     }
 
-    Ok(filtered)
+    filtered
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,5 +310,53 @@ pub async fn test_device_chime() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("Device returned HTTP {}", res.status()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(id: &str, start: i64, end: i64, all_day: bool, tentative: bool) -> CalendarEvent {
+        CalendarEvent {
+            id: id.into(),
+            title: format!("Meeting {id}"),
+            start,
+            end,
+            source: "ics".into(),
+            is_all_day: all_day,
+            is_tentative: tentative,
+        }
+    }
+
+    #[test]
+    fn filters_sorts_and_privatises() {
+        let events = vec![
+            ev("later", 300, 400, false, false),
+            ev("ended", 0, 100, false, false),
+            ev("allday", 150, 500, true, false),
+            ev("tent", 200, 300, false, true),
+            ev("now", 50, 200, false, false),
+        ];
+        let settings = CalendarSyncSettings {
+            private_mode: false,
+            skip_all_day: true,
+            skip_tentative: true,
+        };
+        let ids: Vec<_> = filter_events(events.clone(), &settings, 100)
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(ids, ["now", "later"]);
+
+        let settings = CalendarSyncSettings {
+            private_mode: true,
+            skip_all_day: false,
+            skip_tentative: false,
+        };
+        let out = filter_events(events, &settings, 100);
+        let ids: Vec<_> = out.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["now", "allday", "tent", "later"]);
+        assert!(out.iter().all(|e| e.title == "Busy"));
     }
 }

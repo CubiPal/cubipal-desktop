@@ -119,7 +119,8 @@ async fn perform_sync_cycle(
     let events = match super::sync_calendar_events(sync_settings).await {
         Ok(evts) => evts,
         Err(e) => {
-            eprintln!("[SyncEngine] Failed to sync calendars: {}", e);
+            // Keep the last good event set on the Pal; an error is not "no meetings".
+            eprintln!("[SyncEngine] Failed to sync calendars, not pushing: {}", e);
             return;
         }
     };
