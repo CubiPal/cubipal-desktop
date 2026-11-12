@@ -34,7 +34,7 @@ The companion app features automated multi-platform release CI and in-app auto-u
 
 - **Multi-Platform Releases:** Every `v*` tag trigger builds signed installers for Windows (x64, ARM64) and macOS (Apple Silicon, Intel).
 - **Auto-Updater:** The desktop app checks GitHub Releases for verified signed update manifests (`latest.json`) on startup and daily, prompting before installing updates.
-- **Safety Pause:** Updates pause automatically if a focus timer or meeting countdown is active on your desk pet to avoid interruptions.
+- **Safety Pause:** A firmware update won't start while a focus timer is running on your Pal or a meeting is about to start (or if the app can't confirm the Pal is idle). The firmware download is checked against the release's published SHA-256 checksum when one is available.
 - **Firmware Asset Linking:** GitHub Actions release workflows automatically attach compatible firmware binaries (`.bin` and `.sha256`) from `CubiPal` releases for OTA flashing.
 
 ### Creating a New Release

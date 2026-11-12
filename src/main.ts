@@ -79,8 +79,13 @@ interface OtaProgress {
 }
 
 let currentDeviceIp: string | null = null;
-let activeFirmwareUrl: string | null = null;
-let activeFirmwareSha256: string | null = null;
+let firmwareUpdateReady = false;
+let firmwareUpdateVerified = false;
+// GitHub's unauthenticated API allows 60 requests/hour, so only re-check firmware
+// releases when the Pal's version changes, or hourly (the backend also caches).
+const FIRMWARE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+let lastFirmwareCheckAt = 0;
+let lastFirmwareCheckVersion: string | undefined;
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
@@ -168,9 +173,17 @@ async function refreshDeviceStatus() {
       btnOpenWeb.disabled = false;
       btnUnpair.disabled = false;
       if (btnTestChime) btnTestChime.disabled = false;
-      await checkFirmwareUpdate();
+      if (
+        dev.fw !== lastFirmwareCheckVersion ||
+        Date.now() - lastFirmwareCheckAt > FIRMWARE_CHECK_INTERVAL_MS
+      ) {
+        lastFirmwareCheckAt = Date.now();
+        lastFirmwareCheckVersion = dev.fw;
+        await checkFirmwareUpdate();
+      }
     } else if (dev && !dev.connected) {
       document.getElementById("ota-card")?.classList.add("hidden");
+      lastFirmwareCheckAt = 0; // re-check as soon as the Pal is back
       currentDeviceIp = dev.ip;
       nameEl.textContent = `${dev.robot} (Offline)`;
       subtitleEl.textContent = "Cannot reach device on the network";
@@ -188,6 +201,7 @@ async function refreshDeviceStatus() {
       if (btnTestChime) btnTestChime.disabled = true;
     } else {
       document.getElementById("ota-card")?.classList.add("hidden");
+      lastFirmwareCheckAt = 0; // re-check as soon as the Pal is back
       currentDeviceIp = null;
       nameEl.textContent = "No CubiPal Paired";
       subtitleEl.textContent = "Put your Pal into pairing mode to begin";
@@ -761,19 +775,25 @@ async function checkFirmwareUpdate() {
   if (!otaCard) return;
 
   try {
-    const info = await invoke<FirmwareUpdateInfo>("check_firmware_update");
+    const info = await invoke<FirmwareUpdateInfo>("check_firmware_update", { force: false });
     if (info && info.available && info.download_url) {
-      activeFirmwareUrl = info.download_url;
-      activeFirmwareSha256 = info.sha256;
+      firmwareUpdateReady = true;
+      firmwareUpdateVerified = !!info.sha256;
       const titleEl = document.getElementById("ota-title");
       const descEl = document.getElementById("ota-desc");
       if (titleEl) titleEl.textContent = `Firmware v${info.latest_version} Available`;
-      if (descEl) descEl.textContent = `Your Pal is running v${info.current_version}. Update directly over Wi-Fi (SHA-256 verified).`;
+      if (descEl) {
+        descEl.textContent = firmwareUpdateVerified
+          ? `Your Pal is running v${info.current_version}. Update over Wi-Fi; the download is checked against its published SHA-256 checksum.`
+          : `Your Pal is running v${info.current_version}. Update over Wi-Fi. This release has no published checksum, so the download can't be verified.`;
+      }
       otaCard.classList.remove("hidden");
     } else {
+      firmwareUpdateReady = false;
       otaCard.classList.add("hidden");
     }
   } catch {
+    firmwareUpdateReady = false;
     otaCard.classList.add("hidden");
   }
 }
@@ -786,10 +806,13 @@ function setupOta() {
 
   if (btnInstall) {
     btnInstall.addEventListener("click", async () => {
-      if (!activeFirmwareUrl) return;
+      if (!firmwareUpdateReady) return;
+      const integrityNote = firmwareUpdateVerified
+        ? "The download is checked against its published SHA-256 checksum before it is sent to your Pal."
+        : "This release has no published checksum, so the download can't be verified.";
       if (
         !confirm(
-          "Install firmware update on your CubiPal now?\n\nYour Pal will verify the SHA-256 signature, flash the update over Wi-Fi, and restart automatically.\n\nNote: Updates pause automatically during active calendar meetings or focus timers."
+          `Install firmware update on your CubiPal now?\n\n${integrityNote} Your Pal installs it over Wi-Fi and restarts.\n\nThe update won't start while a focus timer is running or a meeting is about to start.`
         )
       ) {
         return;
@@ -799,11 +822,7 @@ function setupOta() {
       if (progressBox) progressBox.classList.remove("hidden");
 
       try {
-        await invoke("install_firmware_update", {
-          downloadUrl: activeFirmwareUrl,
-          expectedSha256: activeFirmwareSha256,
-          force: false,
-        });
+        await invoke("install_firmware_update", { force: false });
       } catch (err: any) {
         alert(err);
         btnInstall.disabled = false;
