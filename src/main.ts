@@ -72,6 +72,12 @@ interface FirmwareUpdateInfo {
   release_notes: string | null;
 }
 
+interface DesktopUpdateInfo {
+  version: string;
+  current_version: string;
+  body?: string;
+}
+
 interface OtaProgress {
   stage: string;
   percent: number;
@@ -768,9 +774,50 @@ async function setupTrayListeners() {
     renderEventsPreview(event.payload);
   });
 
+  // Desktop app self-update: tray "Check for Updates..." and the daily background check.
+  await listen("check-desktop-updates", async () => {
+    try {
+      const info = await invoke<DesktopUpdateInfo | null>("check_desktop_update");
+      await offerDesktopUpdate(info, true);
+    } catch (e) {
+      alert("Couldn't check for app updates: " + e);
+    }
+  });
+
+  await listen<DesktopUpdateInfo>("desktop-update-available", async (event) => {
+    const autoUpdate = document.getElementById("toggle-autoupdate") as HTMLInputElement | null;
+    if (autoUpdate && !autoUpdate.checked) return;
+    await offerDesktopUpdate(event.payload, false);
+  });
+
   await listen<number>("snooze-alerts", () => {
     alert("Meeting reminders snoozed for 1 hour on your CubiPal.");
   });
+}
+
+let desktopUpdatePromptOpen = false;
+
+async function offerDesktopUpdate(info: DesktopUpdateInfo | null, manual: boolean) {
+  if (!info) {
+    if (manual) alert("CubiPal Desktop is up to date.");
+    return;
+  }
+  if (desktopUpdatePromptOpen) return;
+  desktopUpdatePromptOpen = true;
+  try {
+    await invoke("show_preferences_window");
+    if (
+      confirm(
+        `CubiPal Desktop ${info.version} is available (you have ${info.current_version}).\n\nInstall it now? The app will restart.`
+      )
+    ) {
+      await invoke("install_desktop_update");
+    }
+  } catch (e) {
+    alert("App update failed: " + e);
+  } finally {
+    desktopUpdatePromptOpen = false;
+  }
 }
 
 // --------------------------------------------------------------------------
