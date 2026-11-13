@@ -225,6 +225,17 @@ body {
   margin-bottom: 4px;
 }
 
+.snooze-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  background-color: rgba(180, 83, 9, 0.06);
+  border-color: rgba(180, 83, 9, 0.3);
+  font-size: 13px;
+}
+
 .device-hero {
   display: flex;
   align-items: center;

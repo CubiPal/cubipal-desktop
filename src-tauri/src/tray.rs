@@ -24,8 +24,9 @@ pub fn update_tray_status(text: &str) {
     }
 }
 
-/// Shows the snooze state: "Alerts snoozed until 14:05" plus an enabled
-/// "Resume Alerts", or the normal snooze item.
+/// Shows the snooze state: "Alerts snoozed until 2:05 PM" (or 14:05, as the
+/// system clock is set) plus an enabled "Resume Alerts", or the normal
+/// snooze item.
 pub fn show_snooze(until: Option<i64>) {
     if let Ok(guard) = TRAY_ITEMS.lock()
         && let Some(items) = guard.as_ref()
@@ -33,9 +34,10 @@ pub fn show_snooze(until: Option<i64>) {
         match until.and_then(|t| chrono::DateTime::from_timestamp(t, 0)) {
             Some(t) => {
                 let local = t.with_timezone(&chrono::Local);
-                let _ = items
-                    .snooze
-                    .set_text(format!("Alerts snoozed until {}", local.format("%H:%M")));
+                let _ = items.snooze.set_text(format!(
+                    "Alerts snoozed until {}",
+                    crate::snooze::format_clock(local)
+                ));
                 let _ = items.snooze.set_enabled(false);
                 let _ = items.resume.set_enabled(true);
             }

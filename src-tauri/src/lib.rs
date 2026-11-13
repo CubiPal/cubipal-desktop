@@ -125,6 +125,9 @@ pub fn run() {
             calendar::trigger_calendar_sync,
             calendar::sync_calendar_events,
             calendar::test_device_chime,
+            snooze::get_snooze_state,
+            snooze::resume_alerts,
+            snooze::set_clock_format,
             ota::check_firmware_update,
             ota::install_firmware_update,
         ])

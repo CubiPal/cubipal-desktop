@@ -118,6 +118,8 @@ let lastFirmwareCheckAt = 0;
 let lastFirmwareCheckVersion: string | undefined;
 
 document.addEventListener("DOMContentLoaded", async () => {
+  reportClockFormat();
+  setupSnoozeBanner();
   setupTabs();
   setupPairingModal();
   setupFocusModal();
@@ -139,6 +141,45 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Poll state every 15 seconds
   setInterval(refreshDeviceStatus, 15000);
 });
+
+// --------------------------------------------------------------------------
+// Snooze (TR2-09): the tray's snooze shown in the window, with Resume
+// --------------------------------------------------------------------------
+
+/** Tells the backend whether this locale uses a 12-hour clock (tray text). */
+function reportClockFormat() {
+  const onePm = new Date(2020, 0, 1, 13, 0).toLocaleTimeString(undefined, { hour: "numeric" });
+  invoke("set_clock_format", { twelveHour: !onePm.includes("13") }).catch(() => {});
+}
+
+function showSnooze(until: number | null) {
+  const banner = document.getElementById("snooze-banner");
+  const text = document.getElementById("snooze-text");
+  if (!banner || !text) return;
+  if (until && until * 1000 > Date.now()) {
+    const time = new Date(until * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    text.textContent = `Alerts snoozed until ${time}`;
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+}
+
+async function setupSnoozeBanner() {
+  document.getElementById("btn-resume-alerts")?.addEventListener("click", async () => {
+    try {
+      await invoke("resume_alerts");
+    } catch (err) {
+      alert(`Couldn't resume alerts: ${err}`);
+    }
+  });
+  await listen<number | null>("snooze-changed", (event) => showSnooze(event.payload));
+  try {
+    showSnooze(await invoke<number | null>("get_snooze_state"));
+  } catch {
+    showSnooze(null);
+  }
+}
 
 function setupTabs() {
   const navItems = document.querySelectorAll<HTMLButtonElement>(".nav-item");

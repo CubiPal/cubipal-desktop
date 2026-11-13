@@ -148,6 +148,7 @@ async fn perform_sync_cycle(
         &events,
         config.lead_time_min,
         crate::snooze::snoozed_until(),
+        crate::snooze::snooze_ended_at(),
         DEVICE_MAX_EVENTS,
     );
 

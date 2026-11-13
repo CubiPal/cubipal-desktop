@@ -13,7 +13,7 @@ A lightweight tray application for Windows and macOS that connects your digital 
 - **Calendar Synchronization:** Read-only OAuth 2.0 PKCE synchronization with **Google Calendar**, plus private **iCal (ICS)** calendar links (time zones, all-day and recurring events). **Microsoft 365 / Outlook** support is coming soon (the app shows it as "Coming Soon"; see [docs/building-and-releasing.md](docs/building-and-releasing.md) for the `MICROSOFT_CLIENT_ID` build setting that will enable it).
 - **Private Mode:** Optionally replace event titles with "Busy" before sending them to the device.
 - **Focus / Countdown Timers:** Trigger preset (30m, 60m) or custom (1-180 min) focus sessions right from the system tray.
-- **Snooze Alerts:** The tray can hold back meeting alerts for an hour, with "Resume Alerts" to end it early.
+- **Snooze Alerts:** The tray can hold back meeting alerts for an hour: meetings that start during the snooze are kept off your Pal, and later reminders wait until it ends. The Device tab shows the snooze with a "Resume Alerts" button (also in the tray). A snooze ends if the app quits.
 - **Zero-Friction Physical Pairing:** Device pairing requires physical proximity by tapping a simple touch pattern on your CubiPal's touch point (the flat top of its head) to reveal a one-time setup code.
 
 ---
