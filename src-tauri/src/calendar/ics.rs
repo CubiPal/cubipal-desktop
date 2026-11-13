@@ -5,7 +5,7 @@ use super::tz::resolve_tzid;
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rrule::{RRule, Tz as RTz, Unvalidated};
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Events are synced for this far ahead, as for Google and Microsoft.
 pub const SYNC_WINDOW_HOURS: i64 = 24;
@@ -15,6 +15,16 @@ const MAX_INSTANCES_PER_SERIES: u16 = 50;
 const MAX_EVENTS_PER_FEED: usize = 500;
 /// A timed event without DTEND or DURATION is shown as 30 minutes long.
 const DEFAULT_TIMED_SECS: i64 = 30 * 60;
+/// Largest feed the app downloads. Real calendars are far smaller.
+const MAX_FEED_BYTES: usize = 5 * 1024 * 1024;
+/// Most VEVENTs read from one feed; the rest are ignored.
+const MAX_VEVENTS_PER_FEED: usize = 5000;
+/// Most occurrences walked through for one series (counted from its start,
+/// after any fast-forward), however few of them fall in the window.
+const MAX_ITERATIONS_PER_SERIES: usize = 20_000;
+/// Time one feed may spend expanding recurrences. Series reached after that
+/// keep only their first occurrence.
+const EXPANSION_BUDGET: Duration = Duration::from_secs(2);
 
 /// Normalises a calendar feed URL: `webcal://` (what Apple Calendar and
 /// others hand out) becomes `https://`; only http(s) feeds are accepted.
@@ -36,6 +46,19 @@ pub fn normalize_feed_url(raw: &str) -> Result<String, String> {
 }
 
 pub async fn fetch_ics_events(ics_url: &str) -> Result<Vec<CalendarEvent>, String> {
+    let text = fetch_feed_text(ics_url, MAX_FEED_BYTES).await?;
+    let now = Utc::now();
+    // Parsing and recurrence expansion are CPU work: keep them off the async
+    // runtime's worker threads.
+    tokio::task::spawn_blocking(move || {
+        parse_ics_events(&text, now, ChronoDuration::hours(SYNC_WINDOW_HOURS))
+    })
+    .await
+    .map_err(|e| format!("Couldn't read the calendar feed: {}", e))
+}
+
+/// Downloads a feed, refusing a body over `max_bytes`.
+async fn fetch_feed_text(ics_url: &str, max_bytes: usize) -> Result<String, String> {
     let ics_url = normalize_feed_url(ics_url)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -44,26 +67,47 @@ pub async fn fetch_ics_events(ics_url: &str) -> Result<Vec<CalendarEvent>, Strin
         .map_err(|e| e.to_string())?;
 
     // Private feed URLs embed a secret token, so keep them out of error text.
-    let res = client
-        .get(&ics_url)
-        .send()
-        .await
-        .map_err(|e| format!("Could not download calendar feed: {}", e.without_url()))?;
+    let mut res = client.get(&ics_url).send().await.map_err(feed_error)?;
 
     if !res.status().is_success() {
-        return Err(format!("Server returned HTTP {}", res.status()));
+        return Err(format!(
+            "The calendar server answered with an error (HTTP {}). Check the link.",
+            res.status().as_u16()
+        ));
     }
 
-    let text = res
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read calendar body: {}", e))?;
+    let too_big = || {
+        format!(
+            "The calendar feed is larger than {} MB, so it wasn't read.",
+            max_bytes.div_ceil(1024 * 1024)
+        )
+    };
+    if res
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        return Err(too_big());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(feed_error)? {
+        if body.len() + chunk.len() > max_bytes {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
 
-    Ok(parse_ics_events(
-        &text,
-        Utc::now(),
-        ChronoDuration::hours(SYNC_WINDOW_HOURS),
-    ))
+/// Plain-language text for a failed feed download (never includes the URL).
+fn feed_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "The calendar server took too long to answer. Try again later.".to_string()
+    } else if e.is_connect() || e.is_request() {
+        "Couldn't connect to the calendar server. Check your internet connection and the link."
+            .to_string()
+    } else {
+        format!("Couldn't download the calendar feed: {}", e.without_url())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +261,9 @@ fn collect_events(raw: &str) -> Vec<RawEvent> {
             "END" if prop.value.eq_ignore_ascii_case("VEVENT") => {
                 if let Some(ev) = current.take() {
                     events.push(ev);
+                    if events.len() >= MAX_VEVENTS_PER_FEED {
+                        break;
+                    }
                 }
             }
             _ if nested > 0 => {}
@@ -382,27 +429,165 @@ fn normalize_until(rule: &str, tz: &RTz) -> String {
         .join(";")
 }
 
+/// The `KEY=VALUE` parts of an RRULE, keys in upper case.
+fn rule_parts(rule: &str) -> Vec<(String, String)> {
+    rule.split(';')
+        .filter_map(|part| part.split_once('='))
+        .map(|(k, v)| (k.trim().to_ascii_uppercase(), v.trim().to_string()))
+        .collect()
+}
+
+fn rule_value<'a>(parts: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    parts
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+#[derive(Debug)]
+enum FastForward {
+    /// Keep the rule and start as they are.
+    Unchanged,
+    /// Start the series here instead, with this (COUNT-adjusted) rule.
+    Moved { rule: String, start: DateTime<RTz> },
+    /// A COUNT series that ended before the window.
+    Finished,
+}
+
+/// Moves the start of an old HOURLY, DAILY or WEEKLY series forward by a
+/// whole number of periods (keeping its wall-clock time and weekday) to
+/// about a day before `earliest`, so expansion doesn't walk through years of
+/// past occurrences.
+///
+/// Whole periods keep every BYxxx pattern aligned. COUNT is reduced by the
+/// periods skipped, which is only exact when each period has exactly one
+/// occurrence, so a COUNT rule with BYxxx parts isn't moved (the iteration
+/// cap bounds it instead). BYSETPOS rules are never moved.
+fn fast_forward(
+    parts: &[(String, String)],
+    start: DateTime<RTz>,
+    earliest: DateTime<Utc>,
+) -> FastForward {
+    let unit_secs: i64 = match rule_value(parts, "FREQ").map(str::to_ascii_uppercase) {
+        Some(f) if f == "HOURLY" => 3_600,
+        Some(f) if f == "DAILY" => 86_400,
+        Some(f) if f == "WEEKLY" => 7 * 86_400,
+        _ => return FastForward::Unchanged,
+    };
+    if rule_value(parts, "BYSETPOS").is_some() {
+        return FastForward::Unchanged;
+    }
+    let count = match rule_value(parts, "COUNT") {
+        Some(c) => match c.parse::<i64>() {
+            Ok(c) if c > 0 => Some(c),
+            _ => return FastForward::Unchanged,
+        },
+        None => None,
+    };
+    if count.is_some() && parts.iter().any(|(k, _)| k.starts_with("BY")) {
+        return FastForward::Unchanged;
+    }
+    let interval = match rule_value(parts, "INTERVAL") {
+        Some(i) => match i.parse::<i64>() {
+            Ok(i) if (1..=10_000).contains(&i) => i,
+            _ => return FastForward::Unchanged,
+        },
+        None => 1,
+    };
+    let period = unit_secs * interval;
+
+    let tz = start.timezone();
+    // A day early, so a DST change or the zone offset can't skip one.
+    let target = (earliest - ChronoDuration::days(1))
+        .with_timezone(&tz)
+        .naive_local();
+    let base = start.naive_local();
+    let mut k = (target - base).num_seconds() / period;
+    if k < 1 {
+        return FastForward::Unchanged;
+    }
+    // Occurrences 0..k all start before `target`.
+    if count.is_some_and(|c| c <= k) {
+        return FastForward::Finished;
+    }
+    // If the new start's wall-clock time doesn't exist that day (skipped by
+    // a DST change), start a period earlier instead.
+    for _ in 0..3 {
+        if k < 1 {
+            break;
+        }
+        let naive = base + ChronoDuration::seconds(k * period);
+        if let Some(new_start) = tz.from_local_datetime(&naive).earliest() {
+            let rule = parts
+                .iter()
+                .map(|(key, v)| match (key.as_str(), count) {
+                    ("COUNT", Some(c)) => format!("COUNT={}", c - k),
+                    _ => format!("{}={}", key, v),
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+            return FastForward::Moved {
+                rule,
+                start: new_start,
+            };
+        }
+        k -= 1;
+    }
+    FastForward::Unchanged
+}
+
 /// Occurrence starts of a recurring event that may overlap
 /// `[from, until)`: those starting in `[from - length, until)`. `None` when
-/// the rule can't be understood (the caller then keeps only DTSTART).
+/// the rule can't be understood or is refused (the caller then keeps only
+/// DTSTART).
+///
+/// The work is bounded (B-1): SECONDLY and MINUTELY rules are refused (no
+/// meeting calendar needs them), old series are fast-forwarded to near the
+/// window, at most [`MAX_ITERATIONS_PER_SERIES`] occurrences are walked, and
+/// the walk stops at `deadline`.
 fn expand_rrule(
     rule: &str,
     start: DateTime<RTz>,
     length: i64,
     from: DateTime<Utc>,
     until: DateTime<Utc>,
+    deadline: Instant,
 ) -> Option<Vec<DateTime<RTz>>> {
     let rule = normalize_until(rule, &start.timezone());
+    let parts = rule_parts(&rule);
+    let freq = rule_value(&parts, "FREQ")?.to_ascii_uppercase();
+    if matches!(freq.as_str(), "SECONDLY" | "MINUTELY") {
+        return None;
+    }
+    let earliest = from - ChronoDuration::seconds(length);
+    let (rule, start) = match fast_forward(&parts, start, earliest) {
+        FastForward::Unchanged => (rule, start),
+        FastForward::Moved { rule, start } => (rule, start),
+        FastForward::Finished => return Some(Vec::new()),
+    };
+
     let parsed: RRule<Unvalidated> = rule.parse().ok()?;
-    let set = parsed.build(start).ok()?;
-    let after = (from - ChronoDuration::seconds(length)).with_timezone(&RTz::UTC);
+    // `limit()` makes rrule give up on a rule that never matches (after
+    // 100 000 empty periods) instead of looping forever.
+    let set = parsed.build(start).ok()?.limit();
+    let after = earliest.with_timezone(&RTz::UTC);
     let before = until.with_timezone(&RTz::UTC);
-    Some(
-        set.after(after)
-            .before(before)
-            .all(MAX_INSTANCES_PER_SERIES)
-            .dates,
-    )
+    let mut out = Vec::new();
+    for (i, occ) in (&set).into_iter().enumerate() {
+        if i >= MAX_ITERATIONS_PER_SERIES
+            || occ > before
+            || (i % 256 == 255 && Instant::now() > deadline)
+        {
+            break;
+        }
+        if occ >= after {
+            out.push(occ);
+            if out.len() >= MAX_INSTANCES_PER_SERIES as usize {
+                break;
+            }
+        }
+    }
+    Some(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +603,7 @@ pub fn parse_ics_events(
     window: ChronoDuration,
 ) -> Vec<CalendarEvent> {
     let window_end = now + window;
+    let deadline = Instant::now() + EXPANSION_BUDGET;
     let raw_events = collect_events(raw);
 
     // Overrides of single occurrences, keyed by (UID, original start).
@@ -475,10 +661,11 @@ pub fn parse_ics_events(
         }
 
         let mut starts: Vec<DateTime<RTz>> = match ev.rrule.as_deref() {
-            Some(rule) => {
-                expand_rrule(rule, start, length, now, window_end).unwrap_or_else(|| vec![start])
+            Some(rule) if Instant::now() < deadline => {
+                expand_rrule(rule, start, length, now, window_end, deadline)
+                    .unwrap_or_else(|| vec![start])
             }
-            None => vec![start],
+            _ => vec![start],
         };
         starts.extend(ev.rdates.iter().flat_map(parse_list));
         let excluded: HashSet<i64> = ev
@@ -812,5 +999,192 @@ mod tests {
         assert_eq!(parse_duration("PT"), None);
         assert_eq!(parse_duration("1H"), None);
         assert_eq!(parse_duration("PT5"), None);
+    }
+
+    // -- B-1: bounded recurrence work -------------------------------------
+
+    fn far_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
+    /// The same series expanded by rrule from its real start, with no
+    /// fast-forward and no caps.
+    fn reference(
+        rule: &str,
+        start: DateTime<RTz>,
+        after: DateTime<Utc>,
+        before: DateTime<Utc>,
+    ) -> Vec<i64> {
+        let parsed: RRule<Unvalidated> = rule.parse().unwrap();
+        parsed
+            .build(start)
+            .unwrap()
+            .after(after.with_timezone(&RTz::UTC))
+            .before(before.with_timezone(&RTz::UTC))
+            .all(u16::MAX)
+            .dates
+            .iter()
+            .map(|d| d.timestamp())
+            .take(MAX_INSTANCES_PER_SERIES as usize)
+            .collect()
+    }
+
+    #[test]
+    fn fast_forward_gives_the_same_occurrences_as_a_full_walk() {
+        let now = utc(2026, 11, 12, 10, 0);
+        let until = now + ChronoDuration::days(20);
+        let ny = RTz::Tz(chrono_tz::America::New_York);
+        let london = RTz::Tz(chrono_tz::Europe::London);
+        let at = |tz: &RTz, y, mo, d, h, mi| tz.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap();
+        let cases = [
+            (
+                "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE,FR",
+                at(&ny, 2019, 3, 4, 9, 30),
+            ),
+            ("FREQ=WEEKLY", at(&ny, 2012, 7, 3, 16, 0)),
+            ("FREQ=DAILY;INTERVAL=3", at(&london, 2018, 6, 1, 8, 0)),
+            (
+                "FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR",
+                at(&ny, 2010, 1, 4, 7, 45),
+            ),
+            ("FREQ=HOURLY;INTERVAL=5", at(&RTz::UTC, 2024, 1, 1, 0, 15)),
+            ("FREQ=HOURLY;INTERVAL=7", at(&ny, 2025, 2, 1, 0, 0)),
+            ("FREQ=DAILY;COUNT=3000", at(&ny, 2020, 1, 1, 7, 0)),
+            (
+                "FREQ=WEEKLY;INTERVAL=2;COUNT=500",
+                at(&london, 2015, 5, 5, 12, 0),
+            ),
+            // DST gap: 02:30 doesn't exist on 2027-03-14 in New York.
+            ("FREQ=DAILY", at(&ny, 2020, 3, 1, 2, 30)),
+        ];
+        for (rule, start) in cases {
+            let length = 1800;
+            let got: Vec<i64> = expand_rrule(rule, start, length, now, until, far_deadline())
+                .unwrap()
+                .iter()
+                .map(|d| d.timestamp())
+                .collect();
+            let want = reference(rule, start, now - ChronoDuration::seconds(length), until);
+            assert!(!want.is_empty(), "{rule}");
+            assert_eq!(got, want, "{rule} from {start}");
+        }
+        // A COUNT series that ended years ago is recognised without a walk.
+        let start = at(&ny, 2020, 1, 1, 7, 0);
+        assert!(matches!(
+            fast_forward(
+                &rule_parts("FREQ=DAILY;COUNT=10"),
+                start,
+                now - ChronoDuration::days(1)
+            ),
+            FastForward::Finished
+        ));
+        assert!(
+            expand_rrule(
+                "FREQ=DAILY;COUNT=10",
+                start,
+                1800,
+                now,
+                until,
+                far_deadline()
+            )
+            .unwrap()
+            .is_empty()
+        );
+        // BYSETPOS, and COUNT with BYxxx, are never moved.
+        for rule in [
+            "FREQ=WEEKLY;BYDAY=MO,TU;BYSETPOS=1",
+            "FREQ=WEEKLY;BYDAY=MO;COUNT=900",
+        ] {
+            assert!(matches!(
+                fast_forward(&rule_parts(rule), start, now),
+                FastForward::Unchanged
+            ));
+        }
+    }
+
+    #[test]
+    fn hostile_rules_finish_quickly() {
+        let now = utc(2026, 11, 12, 10, 0);
+        for (rule, expected) in [
+            // Refused outright: only DTSTART (in 2000) is kept, so nothing.
+            ("FREQ=MINUTELY", 0),
+            ("FREQ=SECONDLY", 0),
+            ("FREQ=MINUTELY;INTERVAL=1;BYSECOND=0", 0),
+            // Fast-forwarded to the window.
+            ("FREQ=HOURLY", 24),
+            ("FREQ=HOURLY;BYMINUTE=0,30", 48),
+            ("FREQ=DAILY;COUNT=1000000", 1),
+        ] {
+            let raw = cal(&format!(
+                "BEGIN:VEVENT\r\nUID:h\r\nDTSTART:20000101T000000Z\r\nRRULE:{rule}\r\nEND:VEVENT\r\n"
+            ));
+            let t = Instant::now();
+            let events = parse(&raw, now, 1);
+            let took = t.elapsed();
+            assert!(took < Duration::from_millis(100), "{rule} took {took:?}");
+            assert_eq!(events.len(), expected, "{rule}");
+        }
+    }
+
+    #[test]
+    fn many_old_hourly_series_stay_cheap() {
+        // QA's case: 300 HOURLY series since 2005 took 113 s before B-1.
+        let body: String = (0..300)
+            .map(|i| {
+                format!(
+                    "BEGIN:VEVENT\r\nUID:s{i}\r\nDTSTART:20050101T000000Z\r\nRRULE:FREQ=HOURLY\r\nEND:VEVENT\r\n"
+                )
+            })
+            .collect();
+        let t = Instant::now();
+        let events = parse(&cal(&body), utc(2026, 11, 12, 10, 0), 1);
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(events.len(), MAX_EVENTS_PER_FEED);
+    }
+
+    #[test]
+    fn vevents_per_feed_are_capped() {
+        let body: String = (0..MAX_VEVENTS_PER_FEED + 100)
+            .map(|i| {
+                format!("BEGIN:VEVENT\r\nUID:{i}\r\nDTSTART:20261112T120000Z\r\nEND:VEVENT\r\n")
+            })
+            .collect();
+        assert_eq!(collect_events(&cal(&body)).len(), MAX_VEVENTS_PER_FEED);
+    }
+
+    /// Serves one HTTP response with a `len`-byte body on localhost.
+    async fn serve_once(len: usize, send_length: bool) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let head = if send_length {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/calendar\r\nContent-Length: {len}\r\n\r\n"
+                )
+            } else {
+                "HTTP/1.1 200 OK\r\nContent-Type: text/calendar\r\nConnection: close\r\n\r\n"
+                    .to_string()
+            };
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(&vec![b'A'; len]).await;
+            let _ = sock.shutdown().await;
+        });
+        format!("http://{addr}/feed.ics")
+    }
+
+    #[tokio::test]
+    async fn feed_downloads_are_size_capped() {
+        let cap = 4096;
+        let small = fetch_feed_text(&serve_once(100, true).await, cap).await;
+        assert_eq!(small.unwrap().len(), 100);
+        // Refused from the header, and while streaming without one.
+        let declared = fetch_feed_text(&serve_once(cap + 1, true).await, cap).await;
+        assert!(declared.unwrap_err().contains("larger than"));
+        let streamed = fetch_feed_text(&serve_once(cap * 4, false).await, cap).await;
+        assert!(streamed.unwrap_err().contains("larger than"));
     }
 }
