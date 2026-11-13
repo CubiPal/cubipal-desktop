@@ -9,8 +9,10 @@ use tauri::Emitter;
 /// Firmware releases are published here by the firmware CI (contract §3).
 /// The app never uses the GitHub API for firmware.
 const LATEST_JSON_URL: &str = "https://cubipal.com/firmware/latest.json";
-/// Firmware images are only ever downloaded from under this prefix.
-const FIRMWARE_URL_PREFIX: &str = "https://cubipal.com/firmware/";
+/// Firmware images (and release notes) are only ever fetched from
+/// `https://cubipal.com/firmware/...`.
+const FIRMWARE_HOST: &str = "cubipal.com";
+const FIRMWARE_PATH_PREFIX: &str = "/firmware/";
 
 /// How long a fetched `latest.json` is reused.
 const LATEST_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -106,7 +108,9 @@ struct LatestRelease {
     #[serde(default)]
     notes_url: Option<String>,
     #[serde(default)]
-    builds: HashMap<String, ChipBuilds>,
+    /// Each chip's entry is parsed on its own when needed, so one malformed
+    /// entry doesn't block updates for the other board (B-15).
+    builds: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -205,21 +209,40 @@ fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// The URL, normalised, if it is `https://cubipal.com/firmware/...` once
+/// parsed (B-6): https only, exactly that host, no port or user info, and
+/// the path still under `/firmware/` after `..` and `%2e%2e` segments are
+/// resolved.
+fn firmware_url(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw.trim()).ok()?;
+    let ok = url.scheme() == "https"
+        && url.host_str() == Some(FIRMWARE_HOST)
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path().starts_with(FIRMWARE_PATH_PREFIX);
+    ok.then(|| url.to_string())
+}
+
 /// The OTA build for `chip`, with its URL, hash and size checked.
 fn select_build(release: &LatestRelease, chip: &str) -> Result<OtaBuild, String> {
-    let file = release
-        .builds
-        .get(chip)
-        .and_then(|b| b.ota.as_ref())
-        .ok_or_else(|| {
-            format!(
-                "Firmware v{} has no update for this Pal's board ({}).",
-                release.version, chip
-            )
-        })?;
-    if !file.url.starts_with(FIRMWARE_URL_PREFIX) || file.url.contains("..") {
+    let missing = || {
+        format!(
+            "Firmware v{} has no update for this Pal's board ({}).",
+            release.version, chip
+        )
+    };
+    let entry = release.builds.get(chip).ok_or_else(missing)?;
+    let builds: ChipBuilds = serde_json::from_value(entry.clone()).map_err(|_| {
+        format!(
+            "The firmware release list has a malformed entry for this Pal's board ({}).",
+            chip
+        )
+    })?;
+    let file = builds.ota.ok_or_else(missing)?;
+    let Some(url) = firmware_url(&file.url) else {
         return Err("The firmware release list points outside cubipal.com/firmware.".to_string());
-    }
+    };
     let sha256 = file.sha256.trim().to_ascii_lowercase();
     if !is_sha256_hex(&sha256) {
         return Err("The firmware release list has no valid SHA-256 for this image.".to_string());
@@ -233,7 +256,7 @@ fn select_build(release: &LatestRelease, chip: &str) -> Result<OtaBuild, String>
             .trim()
             .trim_start_matches(['v', 'V'])
             .to_string(),
-        url: file.url.clone(),
+        url,
         sha256,
         size: file.size,
     })
@@ -283,10 +306,7 @@ async fn plan_update(force_refresh: bool) -> Result<UpdatePlan, String> {
         }
     };
     info.latest_version = Some(release.version.trim_start_matches(['v', 'V']).to_string());
-    info.notes_url = release
-        .notes_url
-        .clone()
-        .filter(|u| u.starts_with(FIRMWARE_URL_PREFIX));
+    info.notes_url = release.notes_url.clone().as_deref().and_then(firmware_url);
     info.available = is_update_available(&release.version, dev.fw.as_deref());
     if !info.available {
         return Ok(UpdatePlan { info, build: None });
@@ -384,7 +404,13 @@ fn verify_image(bytes: &[u8], build: &OtaBuild, chip: &str) -> Result<(), String
 }
 
 async fn download_image(build: &OtaBuild) -> Result<Vec<u8>, String> {
-    let client = http_client(Duration::from_secs(120))?;
+    // No redirects: the image must come from the checked URL itself.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .user_agent(concat!("CubiPal-Desktop/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
     let mut res = client
         .get(&build.url)
         .send()
@@ -673,11 +699,51 @@ mod tests {
         assert!(select_build(&entry(ok, &SHA_A[..63], 10), "esp32").is_err());
         assert!(select_build(&entry(ok, SHA_A, 0), "esp32").is_err());
         assert!(select_build(&entry(ok, SHA_A, MAX_IMAGE_BYTES + 1), "esp32").is_err());
+        // URLs are checked after parsing, not as strings (B-6).
+        for bad in [
+            "https://cubipal.com/firmware/%2e%2e/x.bin",
+            "https://cubipal.com/firmware/../x.bin",
+            "https://cubipal.com/firmwarex/x.bin",
+            "https://cubipal.com:8443/firmware/x.bin",
+            "https://user@cubipal.com/firmware/x.bin",
+            "https://cubipal.com.evil.io/firmware/x.bin",
+            "https://evil.io/https://cubipal.com/firmware/x.bin",
+            "ftp://cubipal.com/firmware/x.bin",
+            "not a url",
+        ] {
+            assert!(
+                select_build(&entry(bad, SHA_A, 10), "esp32").is_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            select_build(
+                &entry("https://CubiPal.com/firmware/1.1.0/a.bin", SHA_A, 10),
+                "esp32"
+            )
+            .unwrap()
+            .url,
+            "https://cubipal.com/firmware/1.1.0/a.bin"
+        );
         // An entry with only a factory image has no OTA build.
         let r = latest(&format!(
             r#"{{"esp32":{{"factory":{{"url":"{ok}","sha256":"{SHA_A}","size":10}}}}}}"#
         ));
         assert!(select_build(&r, "esp32").is_err());
+    }
+
+    #[test]
+    fn one_bad_chip_entry_does_not_block_the_other() {
+        let r = latest(&format!(
+            r#"{{
+              "esp32": {{ "ota": {{ "url": "https://cubipal.com/firmware/1.1.0/a.bin", "sha256": null, "size": 10 }} }},
+              "esp32s3": {{ "ota": {{ "url": "https://cubipal.com/firmware/1.1.0/b.bin", "sha256": "{SHA_A}", "size": 10 }} }},
+              "esp32c3": "garbage"
+            }}"#
+        ));
+        assert!(select_build(&r, "esp32s3").is_ok());
+        assert!(select_build(&r, "esp32").unwrap_err().contains("malformed"));
+        assert!(select_build(&r, "esp32c3").is_err());
     }
 
     #[test]
