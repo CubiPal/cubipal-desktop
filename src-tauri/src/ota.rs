@@ -169,7 +169,13 @@ async fn fetch_latest_release() -> Result<LatestRelease, String> {
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Couldn't reach cubipal.com: {}", e.without_url()))?
+        .map_err(|e| match e.status() {
+            Some(status) => format!(
+                "cubipal.com couldn't provide the firmware release list right now (error {}). Try again later.",
+                status.as_u16()
+            ),
+            None => "Couldn't reach cubipal.com to check for firmware updates. Check your internet connection.".to_string(),
+        })?
         .text()
         .await
         .map_err(|e| format!("Couldn't read the firmware release list: {}", e))?;

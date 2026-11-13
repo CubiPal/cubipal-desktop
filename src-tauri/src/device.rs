@@ -22,6 +22,13 @@ const VERIFIED_TTL: Duration = Duration::from_secs(60);
 /// mDNS again (the UI polls every 15 s).
 const RELOCATE_RETRY: Duration = Duration::from_secs(60);
 
+/// Shown when the Pal doesn't answer on the network (TR2-06).
+pub const UNREACHABLE_MSG: &str =
+    "Couldn't reach your Pal \u{2014} is it on and on the same Wi-Fi?";
+/// Shown for HTTP 409: the firmware refuses while a timer or bedtime runs.
+pub const BUSY_MSG: &str =
+    "Your Pal is busy (a timer or bedtime is running) \u{2014} try again after it ends.";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredPal {
     pub id: String,
@@ -425,10 +432,7 @@ impl ResolveError {
     pub fn message(&self) -> String {
         match self {
             ResolveError::NotPaired => "No CubiPal is currently paired.".to_string(),
-            ResolveError::Offline { .. } => {
-                "Can't reach your CubiPal. Make sure it's plugged in and on the same Wi-Fi."
-                    .to_string()
-            }
+            ResolveError::Offline { .. } => UNREACHABLE_MSG.to_string(),
             ResolveError::Mismatch { ip } => format!(
                 "A different device now answers at {}, and your paired CubiPal wasn't found on this network. Nothing was sent to it.",
                 ip
@@ -682,11 +686,13 @@ pub async fn paired_target() -> Result<Target, String> {
 /// the next call re-checks the address.
 pub fn reach_error(e: reqwest::Error) -> String {
     note_unreachable();
-    format!("Failed to reach CubiPal: {}", e.without_url())
+    eprintln!("CubiPal request failed: {}", e.without_url());
+    UNREACHABLE_MSG.to_string()
 }
 
 /// The Pal's own explanation from a failed API call (`{"ok":false,"msg":...}`),
-/// else a short excerpt of the body, else the HTTP status.
+/// else a short excerpt of the body, else a generic line. 401 and 409 get
+/// plain-language text; the HTTP status is logged, not shown.
 pub async fn device_error(res: reqwest::Response) -> String {
     let status = res.status();
     let body = res.text().await.unwrap_or_default();
@@ -699,13 +705,14 @@ pub fn describe_device_error(status: u16, body: &str) -> String {
         .and_then(|v| v["msg"].as_str().map(str::to_string))
         .unwrap_or_else(|| body.trim().chars().take(200).collect());
     let msg = msg.trim();
-    if status == 401 {
-        return "Your CubiPal no longer accepts this app's pairing (it may have been reset). Unpair and pair it again.".to_string();
-    }
-    if msg.is_empty() {
-        format!("CubiPal returned HTTP {}", status)
-    } else {
-        format!("{} (HTTP {})", msg, status)
+    eprintln!("CubiPal answered HTTP {}: {}", status, msg);
+    match status {
+        401 => "Your CubiPal no longer accepts this app's pairing (it may have been reset). Unpair and pair it again.".to_string(),
+        409 => BUSY_MSG.to_string(),
+        _ if msg.is_empty() => {
+            "Your Pal couldn't do that right now. Try again in a moment.".to_string()
+        }
+        _ => msg.to_string(),
     }
 }
 
@@ -747,7 +754,13 @@ pub async fn pair_pal(
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("Could not reach CubiPal at {}: {}", clean_ip, e))?;
+        .map_err(|e| {
+            eprintln!("Pairing request failed: {}", e.without_url());
+            format!(
+                "Couldn't reach a Pal at {} \u{2014} is it on and on the same Wi-Fi?",
+                clean_ip
+            )
+        })?;
 
     let status = res.status();
     let body = res
@@ -765,7 +778,7 @@ pub async fn pair_pal(
     if !(status.is_success() && parsed.ok) {
         return Err(parsed
             .msg
-            .unwrap_or_else(|| format!("Pairing rejected (HTTP {})", status)));
+            .unwrap_or_else(|| "The Pal didn't accept the pairing. Try again.".to_string()));
     }
     let Some(ref token) = parsed.token else {
         return Err("The Pal accepted the code but sent no token.".to_string());
@@ -1034,19 +1047,22 @@ mod tests {
 
     #[test]
     fn device_errors_show_the_pals_reason() {
+        // 409: a timer or bedtime is running, whatever the Pal's wording.
+        for body in [
+            r#"{"ok":false,"msg":"Update rejected: a focus or countdown timer is active on CubiPal"}"#,
+            r#"{"ok":false,"msg":"In bedtime right now"}"#,
+        ] {
+            assert_eq!(describe_device_error(409, body), BUSY_MSG);
+        }
+        // Otherwise the Pal's own reason, without the HTTP code.
         assert_eq!(
-            describe_device_error(
-                409,
-                r#"{"ok":false,"msg":"Update rejected: a focus or countdown timer is active on CubiPal"}"#
-            ),
-            "Update rejected: a focus or countdown timer is active on CubiPal (HTTP 409)"
+            describe_device_error(400, r#"{"ok":false,"msg":"Unknown skin"}"#),
+            "Unknown skin"
         );
-        assert_eq!(
-            describe_device_error(500, "Update failed"),
-            "Update failed (HTTP 500)"
-        );
-        assert_eq!(describe_device_error(502, ""), "CubiPal returned HTTP 502");
+        assert_eq!(describe_device_error(500, "Update failed"), "Update failed");
+        assert!(!describe_device_error(502, "").contains("HTTP"));
         assert!(describe_device_error(401, "{}").contains("pair it again"));
+        assert!(ResolveError::Offline { ip: "x".into() }.message() == UNREACHABLE_MSG);
     }
 
     #[test]
