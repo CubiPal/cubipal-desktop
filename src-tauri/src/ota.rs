@@ -20,9 +20,14 @@ const LATEST_FAILURE_TTL: Duration = Duration::from_secs(10 * 60);
 /// Largest image the app will download (the Pal's flash is 4 MB).
 const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Every ESP32 application image starts with this magic byte. The merged
-/// factory image starts with the bootloader or 0xFF padding instead.
+/// Every ESP32 image (app or bootloader) starts with this magic byte.
 const ESP_IMAGE_MAGIC: u8 = 0xE9;
+/// `ESP_APP_DESC_MAGIC_WORD`: an application image has its `esp_app_desc_t`
+/// right after the 24-byte image header and the 8-byte first segment header.
+/// A bootloader (and so the S3 merged factory image, which starts with the
+/// bootloader at offset 0) has something else there.
+const ESP_APP_DESC_MAGIC: u32 = 0xABCD_5432;
+const ESP_APP_DESC_OFFSET: usize = 0x20;
 
 /// Chip ids this app knows how to update (contract §2), with the chip id the
 /// ESP-IDF image header (`esp_image_header_t.chip_id`, bytes 12-13) carries.
@@ -318,6 +323,15 @@ fn check_esp_image(bytes: &[u8], chip: Option<&str>) -> Result<(), String> {
             );
         }
         None => return Err("The firmware file is empty.".to_string()),
+    }
+    let app_magic = bytes
+        .get(ESP_APP_DESC_OFFSET..ESP_APP_DESC_OFFSET + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    if app_magic != Some(ESP_APP_DESC_MAGIC) {
+        return Err(
+            "This file is not a CubiPal OTA firmware image (no app descriptor). It may be the factory or bootloader image, which is for USB flashing only."
+                .to_string(),
+        );
     }
     if let Some(chip) = chip
         && let Some((_, want)) = KNOWN_CHIPS.iter().find(|(c, _)| *c == chip)
@@ -700,19 +714,46 @@ mod tests {
     }
 
     fn image(chip_id: u16, len: usize) -> Vec<u8> {
-        let mut v = vec![0u8; len.max(16)];
+        let mut v = vec![0u8; len.max(0x24)];
         v[0] = 0xE9;
         v[12..14].copy_from_slice(&chip_id.to_le_bytes());
+        v[0x20..0x24].copy_from_slice(&ESP_APP_DESC_MAGIC.to_le_bytes());
         v
+    }
+
+    /// The first 0x30 bytes of the real v1.1.0 S3 images (QA `xxd`). The
+    /// merged factory image starts with the bootloader, which also has `E9`
+    /// and chip id 0x0009, but no app descriptor at 0x20.
+    const S3_OTA_HEAD: [u8; 0x30] = [
+        0xe9, 0x07, 0x02, 0x2f, 0xcc, 0x5c, 0x37, 0x40, 0xee, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00,
+        0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x00, 0x0e, 0x3c, 0xa4, 0x20,
+        0x03, 0x00, 0x32, 0x54, 0xcd, 0xab, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00,
+    ];
+    const S3_FACTORY_HEAD: [u8; 0x30] = [
+        0xe9, 0x03, 0x02, 0x2f, 0xb8, 0x88, 0x3c, 0x40, 0xee, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00,
+        0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x28, 0xce, 0x3f, 0xcc, 0x10,
+        0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x76, 0x35, 0x2e, 0x35, 0x2e,
+        0x35, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn factory_and_bootloader_images_are_refused() {
+        assert!(check_esp_image(&S3_OTA_HEAD, Some("esp32s3")).is_ok());
+        let err = check_esp_image(&S3_FACTORY_HEAD, Some("esp32s3")).unwrap_err();
+        assert!(err.contains("factory"), "{err}");
+        assert!(check_esp_image(&S3_FACTORY_HEAD, None).is_err());
+        // Too short to hold an app descriptor.
+        assert!(check_esp_image(&S3_OTA_HEAD[..0x22], Some("esp32s3")).is_err());
     }
 
     #[test]
     fn esp_image_header_is_checked() {
-        assert!(check_esp_image(&image(0x0009, 32), Some("esp32s3")).is_ok());
-        assert!(check_esp_image(&image(0x0000, 32), Some("esp32")).is_ok());
+        assert!(check_esp_image(&image(0x0009, 64), Some("esp32s3")).is_ok());
+        assert!(check_esp_image(&image(0x0000, 64), Some("esp32")).is_ok());
         // The other board's image is refused.
-        assert!(check_esp_image(&image(0x0000, 32), Some("esp32s3")).is_err());
-        assert!(check_esp_image(&image(0x0009, 32), Some("esp32")).is_err());
+        assert!(check_esp_image(&image(0x0000, 64), Some("esp32s3")).is_err());
+        assert!(check_esp_image(&image(0x0009, 64), Some("esp32")).is_err());
         assert!(check_esp_image(&[0xFF, 0xFF], None).is_err());
         assert!(check_esp_image(b"<!DOCTYPE html>", None).is_err());
         assert!(check_esp_image(&[], None).is_err());
