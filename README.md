@@ -10,11 +10,11 @@ A lightweight tray application for Windows and macOS that connects your digital 
 
 - **Local-First & Private:** All communication between this app and your CubiPal happens directly over your local Wi-Fi network via HTTP. No calendar data ever touches a CubiPal cloud server; no accounts are required.
 - **Autonomous Device Reminders:** The app pushes your next two meetings to your CubiPal. The device runs its own countdown timer and sounds reminder chimes even if your laptop sleeps.
-- **Calendar Synchronization:** Read-only OAuth 2.0 PKCE synchronization with **Google Calendar**, plus private **iCal (ICS)** calendar links (time zones, all-day and recurring events). **Microsoft 365 / Outlook** is enabled in builds that have a Microsoft client ID; otherwise the app shows it as "coming soon".
+- **Calendar Synchronization:** Read-only OAuth 2.0 PKCE synchronization with **Google Calendar**, plus private **iCal (ICS)** calendar links (time zones, all-day and recurring events). **Microsoft 365 / Outlook** support is coming soon (the app shows it as "Coming Soon"; see [docs/building-and-releasing.md](docs/building-and-releasing.md) for the `MICROSOFT_CLIENT_ID` build setting that will enable it).
 - **Private Mode:** Optionally replace event titles with "Busy" before sending them to the device.
 - **Focus / Countdown Timers:** Trigger preset (30m, 60m) or custom (1-180 min) focus sessions right from the system tray.
 - **Snooze Alerts:** The tray can hold back meeting alerts for an hour, with "Resume Alerts" to end it early.
-- **Zero-Friction Physical Pairing:** Device pairing requires physical proximity by tapping a simple touch pattern on your CubiPal's crown to reveal a one-time setup code.
+- **Zero-Friction Physical Pairing:** Device pairing requires physical proximity by tapping a simple touch pattern on your CubiPal's touch point (the flat top of its head) to reveal a one-time setup code.
 
 ---
 
@@ -23,7 +23,7 @@ A lightweight tray application for Windows and macOS that connects your digital 
 - **Framework:** [Tauri v2](https://v2.tauri.app/) (Rust core + Web frontend)
 - **Security:** Platform-native credential management via **Windows Credential Manager** and **macOS Keychain** (`keyring` crate)
 - **Local Discovery:** mDNS (`_cubipal._tcp`) service discovery with manual IP fallback
-- **Cross-Platform:** Windows 10/11 (x64, ARM64) and macOS 13+ (Apple Silicon, Intel)
+- **Cross-Platform:** Windows 10/11 (x64, ARM64) and macOS 11 or later (Apple Silicon, Intel)
 
 The full technical design is in the CubiPal tech design document (internal).
 
