@@ -148,8 +148,191 @@ const WINDOWS_ZONES: &[(&str, &str)] = &[
     ("Line Islands Standard Time", "Pacific/Kiritimati"),
 ];
 
+/// Windows time zone display names, as some Outlook exports write them in
+/// TZID (`(UTC-05:00) Eastern Time (US & Canada)`), without the `(UTC...)`
+/// prefix, mapped to the same IANA zones as [`WINDOWS_ZONES`]. Older and
+/// newer Windows spellings are both listed.
+const WINDOWS_DISPLAY_NAMES: &[(&str, &str)] = &[
+    ("International Date Line West", "Etc/GMT+12"),
+    ("Coordinated Universal Time-11", "Etc/GMT+11"),
+    ("Aleutian Islands", "America/Adak"),
+    ("Hawaii", "Pacific/Honolulu"),
+    ("Marquesas Islands", "Pacific/Marquesas"),
+    ("Alaska", "America/Anchorage"),
+    ("Coordinated Universal Time-09", "Etc/GMT+9"),
+    ("Baja California", "America/Tijuana"),
+    ("Coordinated Universal Time-08", "Etc/GMT+8"),
+    ("Pacific Time (US & Canada)", "America/Los_Angeles"),
+    ("Arizona", "America/Phoenix"),
+    ("Chihuahua, La Paz, Mazatlan", "America/Mazatlan"),
+    ("La Paz, Mazatlan", "America/Mazatlan"),
+    ("Mountain Time (US & Canada)", "America/Denver"),
+    ("Yukon", "America/Whitehorse"),
+    ("Central America", "America/Guatemala"),
+    ("Central Time (US & Canada)", "America/Chicago"),
+    ("Easter Island", "Pacific/Easter"),
+    ("Guadalajara, Mexico City, Monterrey", "America/Mexico_City"),
+    ("Saskatchewan", "America/Regina"),
+    ("Bogota, Lima, Quito, Rio Branco", "America/Bogota"),
+    ("Bogota, Lima, Quito", "America/Bogota"),
+    ("Chetumal", "America/Cancun"),
+    ("Eastern Time (US & Canada)", "America/New_York"),
+    ("Haiti", "America/Port-au-Prince"),
+    ("Havana", "America/Havana"),
+    ("Indiana (East)", "America/Indiana/Indianapolis"),
+    ("Turks and Caicos", "America/Grand_Turk"),
+    ("Asuncion", "America/Asuncion"),
+    ("Atlantic Time (Canada)", "America/Halifax"),
+    ("Caracas", "America/Caracas"),
+    ("Cuiaba", "America/Cuiaba"),
+    ("Georgetown, La Paz, Manaus, San Juan", "America/La_Paz"),
+    ("Santiago", "America/Santiago"),
+    ("Newfoundland", "America/St_Johns"),
+    ("Araguaina", "America/Araguaina"),
+    ("Brasilia", "America/Sao_Paulo"),
+    ("Cayenne, Fortaleza", "America/Cayenne"),
+    ("City of Buenos Aires", "America/Argentina/Buenos_Aires"),
+    ("Buenos Aires", "America/Argentina/Buenos_Aires"),
+    ("Greenland", "America/Nuuk"),
+    ("Montevideo", "America/Montevideo"),
+    ("Punta Arenas", "America/Punta_Arenas"),
+    ("Saint Pierre and Miquelon", "America/Miquelon"),
+    ("Salvador", "America/Bahia"),
+    ("Coordinated Universal Time-02", "Etc/GMT+2"),
+    ("Mid-Atlantic - Old", "Etc/GMT+2"),
+    ("Azores", "Atlantic/Azores"),
+    ("Cabo Verde Is.", "Atlantic/Cape_Verde"),
+    ("Cape Verde Is.", "Atlantic/Cape_Verde"),
+    ("Coordinated Universal Time", "Etc/UTC"),
+    ("Dublin, Edinburgh, Lisbon, London", "Europe/London"),
+    ("Monrovia, Reykjavik", "Atlantic/Reykjavik"),
+    ("Sao Tome", "Africa/Sao_Tome"),
+    ("Casablanca", "Africa/Casablanca"),
+    (
+        "Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna",
+        "Europe/Berlin",
+    ),
+    (
+        "Belgrade, Bratislava, Budapest, Ljubljana, Prague",
+        "Europe/Budapest",
+    ),
+    ("Brussels, Copenhagen, Madrid, Paris", "Europe/Paris"),
+    ("Sarajevo, Skopje, Warsaw, Zagreb", "Europe/Warsaw"),
+    ("West Central Africa", "Africa/Lagos"),
+    ("Amman", "Asia/Amman"),
+    ("Athens, Bucharest", "Europe/Bucharest"),
+    ("Beirut", "Asia/Beirut"),
+    ("Cairo", "Africa/Cairo"),
+    ("Chisinau", "Europe/Chisinau"),
+    ("Damascus", "Asia/Damascus"),
+    ("Gaza, Hebron", "Asia/Hebron"),
+    ("Harare, Pretoria", "Africa/Johannesburg"),
+    (
+        "Helsinki, Kyiv, Riga, Sofia, Tallinn, Vilnius",
+        "Europe/Kyiv",
+    ),
+    (
+        "Helsinki, Kiev, Riga, Sofia, Tallinn, Vilnius",
+        "Europe/Kyiv",
+    ),
+    ("Jerusalem", "Asia/Jerusalem"),
+    ("Juba", "Africa/Juba"),
+    ("Kaliningrad", "Europe/Kaliningrad"),
+    ("Khartoum", "Africa/Khartoum"),
+    ("Tripoli", "Africa/Tripoli"),
+    ("Windhoek", "Africa/Windhoek"),
+    ("Baghdad", "Asia/Baghdad"),
+    ("Istanbul", "Europe/Istanbul"),
+    ("Kuwait, Riyadh", "Asia/Riyadh"),
+    ("Minsk", "Europe/Minsk"),
+    ("Moscow, St. Petersburg", "Europe/Moscow"),
+    ("Moscow, St. Petersburg, Volgograd", "Europe/Moscow"),
+    ("Nairobi", "Africa/Nairobi"),
+    ("Volgograd", "Europe/Volgograd"),
+    ("Tehran", "Asia/Tehran"),
+    ("Abu Dhabi, Muscat", "Asia/Dubai"),
+    ("Astrakhan, Ulyanovsk", "Europe/Astrakhan"),
+    ("Baku", "Asia/Baku"),
+    ("Izhevsk, Samara", "Europe/Samara"),
+    ("Port Louis", "Indian/Mauritius"),
+    ("Saratov", "Europe/Saratov"),
+    ("Tbilisi", "Asia/Tbilisi"),
+    ("Yerevan", "Asia/Yerevan"),
+    ("Kabul", "Asia/Kabul"),
+    ("Ashgabat, Tashkent", "Asia/Tashkent"),
+    ("Ekaterinburg", "Asia/Yekaterinburg"),
+    ("Islamabad, Karachi", "Asia/Karachi"),
+    ("Qyzylorda", "Asia/Qyzylorda"),
+    ("Chennai, Kolkata, Mumbai, New Delhi", "Asia/Kolkata"),
+    ("Sri Jayawardenepura", "Asia/Colombo"),
+    ("Kathmandu", "Asia/Kathmandu"),
+    ("Astana", "Asia/Bishkek"),
+    ("Bishkek", "Asia/Bishkek"),
+    ("Dhaka", "Asia/Dhaka"),
+    ("Omsk", "Asia/Omsk"),
+    ("Yangon (Rangoon)", "Asia/Yangon"),
+    ("Bangkok, Hanoi, Jakarta", "Asia/Bangkok"),
+    ("Barnaul, Gorno-Altaysk", "Asia/Barnaul"),
+    ("Hovd", "Asia/Hovd"),
+    ("Krasnoyarsk", "Asia/Krasnoyarsk"),
+    ("Novosibirsk", "Asia/Novosibirsk"),
+    ("Tomsk", "Asia/Tomsk"),
+    ("Beijing, Chongqing, Hong Kong, Urumqi", "Asia/Shanghai"),
+    ("Irkutsk", "Asia/Irkutsk"),
+    ("Kuala Lumpur, Singapore", "Asia/Singapore"),
+    ("Perth", "Australia/Perth"),
+    ("Taipei", "Asia/Taipei"),
+    ("Ulaanbaatar", "Asia/Ulaanbaatar"),
+    ("Eucla", "Australia/Eucla"),
+    ("Chita", "Asia/Chita"),
+    ("Osaka, Sapporo, Tokyo", "Asia/Tokyo"),
+    ("Pyongyang", "Asia/Pyongyang"),
+    ("Seoul", "Asia/Seoul"),
+    ("Yakutsk", "Asia/Yakutsk"),
+    ("Adelaide", "Australia/Adelaide"),
+    ("Darwin", "Australia/Darwin"),
+    ("Brisbane", "Australia/Brisbane"),
+    ("Canberra, Melbourne, Sydney", "Australia/Sydney"),
+    ("Guam, Port Moresby", "Pacific/Port_Moresby"),
+    ("Hobart", "Australia/Hobart"),
+    ("Vladivostok", "Asia/Vladivostok"),
+    ("Lord Howe Island", "Australia/Lord_Howe"),
+    ("Bougainville Island", "Pacific/Bougainville"),
+    ("Chokurdakh", "Asia/Srednekolymsk"),
+    ("Magadan", "Asia/Magadan"),
+    ("Norfolk Island", "Pacific/Norfolk"),
+    ("Sakhalin", "Asia/Sakhalin"),
+    ("Solomon Is., New Caledonia", "Pacific/Guadalcanal"),
+    ("Anadyr, Petropavlovsk-Kamchatsky", "Asia/Kamchatka"),
+    ("Auckland, Wellington", "Pacific/Auckland"),
+    ("Coordinated Universal Time+12", "Etc/GMT-12"),
+    ("Fiji", "Pacific/Fiji"),
+    ("Chatham Islands", "Pacific/Chatham"),
+    ("Coordinated Universal Time+13", "Etc/GMT-13"),
+    ("Nuku'alofa", "Pacific/Tongatapu"),
+    ("Samoa", "Pacific/Apia"),
+    ("Kiritimati Island", "Pacific/Kiritimati"),
+];
+
+/// The name part of a Windows display name: `(UTC-05:00) Eastern Time (US &
+/// Canada)` gives `Eastern Time (US & Canada)`. Also accepts the older
+/// `(GMT-05:00)` form and a bare `(UTC)`.
+fn strip_display_offset(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix('(')?;
+    let (offset, after) = rest.split_once(')')?;
+    let offset = offset.trim();
+    let sign = offset
+        .strip_prefix("UTC")
+        .or_else(|| offset.strip_prefix("GMT"))?;
+    let looks_like_offset = sign.is_empty()
+        || (sign.starts_with(['+', '-'])
+            && sign[1..].chars().all(|c| c.is_ascii_digit() || c == ':'));
+    looks_like_offset.then(|| after.trim())
+}
+
 /// Resolves a `TZID` parameter to a zone. Accepts IANA names
-/// (`America/New_York`), Windows names (`Eastern Standard Time`), and
+/// (`America/New_York`), Windows names (`Eastern Standard Time`), Windows
+/// display names (`(UTC-05:00) Eastern Time (US & Canada)`, B-16), and
 /// prefixed ids some apps write (`/mozilla.org/20050126_1/America/New_York`).
 /// `None` for an unknown name; the caller then treats the time as local.
 pub fn resolve_tzid(raw: &str) -> Option<Tz> {
@@ -171,6 +354,12 @@ pub fn resolve_tzid(raw: &str) -> Option<Tz> {
         .find(|tz| tz.name().eq_ignore_ascii_case(name))
     {
         return Some(*tz);
+    }
+    if let Some(display) = strip_display_offset(name) {
+        return WINDOWS_DISPLAY_NAMES
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(display))
+            .and_then(|(_, iana)| iana.parse().ok());
     }
     // A vendor prefix before an IANA name: try each "/"-separated suffix.
     name.match_indices('/')
@@ -213,5 +402,42 @@ mod tests {
         assert_eq!(resolve_tzid("america/chicago"), Some(Tz::America__Chicago));
         assert_eq!(resolve_tzid("Not A Zone"), None);
         assert_eq!(resolve_tzid(""), None);
+    }
+
+    #[test]
+    fn every_display_name_maps_to_a_real_iana_zone() {
+        for (name, iana) in WINDOWS_DISPLAY_NAMES {
+            assert!(iana.parse::<Tz>().is_ok(), "{name} -> {iana} is not a zone");
+        }
+    }
+
+    #[test]
+    fn resolves_outlook_display_names() {
+        assert_eq!(
+            resolve_tzid("(UTC-05:00) Eastern Time (US & Canada)"),
+            Some(Tz::America__New_York)
+        );
+        assert_eq!(
+            resolve_tzid("\"(UTC-08:00) Pacific Time (US & Canada)\""),
+            Some(Tz::America__Los_Angeles)
+        );
+        assert_eq!(
+            resolve_tzid("(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna"),
+            Some(Tz::Europe__Berlin)
+        );
+        assert_eq!(
+            resolve_tzid("(GMT+05:30) Chennai, Kolkata, Mumbai, New Delhi"),
+            Some(Tz::Asia__Kolkata)
+        );
+        assert_eq!(
+            resolve_tzid("(UTC) Coordinated Universal Time").map(|t| t.name()),
+            Some("Etc/UTC")
+        );
+        // Unknown display names fall back to local time (None).
+        assert_eq!(resolve_tzid("(UTC-05:00) Somewhere New"), None);
+        assert_eq!(
+            resolve_tzid("(Not an offset) Eastern Time (US & Canada)"),
+            None
+        );
     }
 }

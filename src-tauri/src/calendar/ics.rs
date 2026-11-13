@@ -840,6 +840,7 @@ mod tests {
             "\"America/New_York\"",
             "Eastern Standard Time",
             "/mozilla.org/20050126_1/America/New_York",
+            "\"(UTC-05:00) Eastern Time (US & Canada)\"",
         ] {
             let raw = cal(&format!(
                 "BEGIN:VEVENT\r\nUID:tz\r\nDTSTART;TZID={tzid}:20261112T090000\r\nDTEND;TZID={tzid}:20261112T100000\r\nEND:VEVENT\r\n"
