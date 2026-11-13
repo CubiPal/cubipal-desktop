@@ -3,6 +3,8 @@ mod device;
 mod ota;
 mod settings;
 mod snooze;
+#[cfg(test)]
+mod test_http;
 mod tray;
 
 use std::time::Duration;

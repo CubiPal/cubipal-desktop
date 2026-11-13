@@ -387,26 +387,50 @@ struct DevicePushPayload {
     events: Vec<DevicePushEvent>,
 }
 
-#[tauri::command]
-pub async fn test_device_chime() -> Result<(), String> {
-    let target = crate::device::paired_target().await?;
+const CHIME_PLAYED_MSG: &str = "Your Pal played the meeting chime.";
+const CHIME_FALLBACK_MSG: &str = "Your Pal's firmware can't play a test chime yet, so it showed a test message instead. Update its firmware to hear the chime.";
 
+/// "Play Test Chime": plays the meeting chime on the Pal and says what
+/// happened.
+#[tauri::command]
+pub async fn test_device_chime() -> Result<String, String> {
+    let target = crate::device::paired_target().await?;
+    play_test_chime(&target.ip, &target.token).await
+}
+
+/// `POST /api/chime` (firmware 1.1.0+). Older firmware has no such route
+/// (404), so it falls back to showing "Meeting Chime Test" on the eyes.
+/// A busy Pal (timer or bedtime, 409) gets a plain-language message.
+async fn play_test_chime(ip: &str, token: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?;
+    let post = |path: &str| {
+        client
+            .post(format!("http://{}{}", ip, path))
+            .bearer_auth(token)
+            .header("X-Pet", "1")
+    };
 
-    let res = client
-        .post(format!("http://{}/api/message", target.ip))
-        .bearer_auth(&target.token)
-        .header("X-Pet", "1")
+    let res = post("/api/chime")
+        .send()
+        .await
+        .map_err(crate::device::reach_error)?;
+    if res.status().is_success() {
+        return Ok(CHIME_PLAYED_MSG.to_string());
+    }
+    if res.status() != reqwest::StatusCode::NOT_FOUND {
+        return Err(crate::device::device_error(res).await);
+    }
+
+    let res = post("/api/message")
         .form(&[("text", "Meeting Chime Test")])
         .send()
         .await
         .map_err(crate::device::reach_error)?;
-
     if res.status().is_success() {
-        Ok(())
+        Ok(CHIME_FALLBACK_MSG.to_string())
     } else {
         Err(crate::device::device_error(res).await)
     }
@@ -415,6 +439,50 @@ pub async fn test_device_chime() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_chime_uses_api_chime_and_falls_back_on_old_firmware() {
+        use crate::test_http::serve;
+        // 1.1.0+: the chime plays.
+        let (ip, seen) = serve(vec![("200 OK", r#"{"ok":true}"#)]).await;
+        assert_eq!(play_test_chime(&ip, "t").await.unwrap(), CHIME_PLAYED_MSG);
+        assert_eq!(*seen.lock().unwrap(), ["POST /api/chime"]);
+        // Older firmware: 404, then the test message.
+        let (ip, seen) = serve(vec![
+            ("404 Not Found", "Not found"),
+            ("200 OK", r#"{"ok":true,"msg":"Sent"}"#),
+        ])
+        .await;
+        assert_eq!(play_test_chime(&ip, "t").await.unwrap(), CHIME_FALLBACK_MSG);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["POST /api/chime", "POST /api/message"]
+        );
+        // Busy: a clear message, and no fallback.
+        let (ip, seen) = serve(vec![(
+            "409 Conflict",
+            r#"{"ok":false,"msg":"In bedtime right now"}"#,
+        )])
+        .await;
+        assert_eq!(
+            play_test_chime(&ip, "t").await.unwrap_err(),
+            crate::device::BUSY_MSG
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        // Busy on old firmware too.
+        let (ip, _) = serve(vec![
+            ("404 Not Found", ""),
+            (
+                "409 Conflict",
+                r#"{"ok":false,"msg":"In bedtime right now"}"#,
+            ),
+        ])
+        .await;
+        assert_eq!(
+            play_test_chime(&ip, "t").await.unwrap_err(),
+            crate::device::BUSY_MSG
+        );
+    }
 
     #[test]
     fn revoked_grant_is_recognised() {

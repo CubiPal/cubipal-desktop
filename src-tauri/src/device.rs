@@ -1135,23 +1135,8 @@ mod tests {
         );
     }
 
-    /// Answers one HTTP request on localhost with `status` and `body`.
     async fn serve_once(status: &'static str, body: &'static str) -> String {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 2048];
-            let _ = sock.read(&mut buf).await;
-            let reply = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = sock.write_all(reply.as_bytes()).await;
-            let _ = sock.shutdown().await;
-        });
-        addr.to_string()
+        crate::test_http::serve(vec![(status, body)]).await.0
     }
 
     #[tokio::test]

@@ -677,19 +677,29 @@ async function persistCurrentSyncConfig() {
 
 function setupRemindersTab() {
   const btnTestChime = document.getElementById("btn-test-chime");
+  const chimeStatus = document.getElementById("chime-status");
   if (btnTestChime) {
     btnTestChime.addEventListener("click", async () => {
       btnTestChime.setAttribute("disabled", "true");
       btnTestChime.textContent = "Chiming...";
+      chimeStatus?.classList.add("hidden");
       try {
-        await invoke("test_device_chime");
+        // Plays the meeting chime (firmware 1.1.0+); older firmware shows a
+        // test message instead, and the backend says which happened.
+        const result = await invoke<string>("test_device_chime");
+        showChimeStatus(result, false);
       } catch (err) {
-        alert("Failed to play chime: " + err);
+        showChimeStatus(`Couldn't play the chime: ${err}`, true);
       } finally {
         btnTestChime.removeAttribute("disabled");
         btnTestChime.textContent = "Play Test Chime";
       }
     });
+  }
+  function showChimeStatus(text: string, isError: boolean) {
+    if (!chimeStatus) return;
+    chimeStatus.textContent = text;
+    chimeStatus.className = `text-xs mt-2 ${isError ? "text-danger" : "text-muted"}`;
   }
 
   // Settings changes: save first (saving also starts the background push
