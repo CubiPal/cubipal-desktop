@@ -45,6 +45,9 @@ pub struct FirmwareUpdateInfo {
     /// app, or the check couldn't run. Shown to the user as is.
     pub blocked_reason: Option<String>,
     pub notes_url: Option<String>,
+    /// The Pal can't be updated over Wi-Fi (its firmware doesn't report its
+    /// board); it needs one USB install from this page first.
+    pub recover_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,7 +243,9 @@ fn select_build(release: &LatestRelease, chip: &str) -> Result<OtaBuild, String>
 // Update check
 // ---------------------------------------------------------------------------
 
-const UNKNOWN_CHIP_MSG: &str = "Your Pal's firmware doesn't say which board it has, so the app can't pick the right update. Update it once from cubipal.com/recover over USB; after that the app can update it over Wi-Fi.";
+/// The browser installer for a one-time USB update (TR2-05).
+const RECOVER_URL: &str = "https://cubipal.com/recover";
+const UNKNOWN_CHIP_MSG: &str = "Your Pal's firmware is too old to tell the app which board it has, so this first update has to be installed over USB from the recovery page. That resets your Pal: afterwards, set up its Wi-Fi again and pair this app again. After that, updates come over Wi-Fi.";
 
 /// What the app would install, or why it can't.
 struct UpdatePlan {
@@ -260,6 +265,7 @@ async fn plan_update(force_refresh: bool) -> Result<UpdatePlan, String> {
         chip: dev.chip.clone(),
         blocked_reason: None,
         notes_url: None,
+        recover_url: None,
     };
 
     // Offline: the version is unknown, so offer nothing (QA-09).
@@ -291,6 +297,7 @@ async fn plan_update(force_refresh: bool) -> Result<UpdatePlan, String> {
         Some(c) if is_known_chip(c) => c.to_string(),
         _ => {
             info.blocked_reason = Some(UNKNOWN_CHIP_MSG.to_string());
+            info.recover_url = Some(RECOVER_URL.to_string());
             return Ok(UpdatePlan { info, build: None });
         }
     };
@@ -570,7 +577,7 @@ async fn flash_firmware_bytes(
             window,
             "completed",
             100,
-            "Update successful! Your Pal has restarted.",
+            "Firmware sent. Your Pal is restarting with the new version...",
         );
         Ok(())
     } else {

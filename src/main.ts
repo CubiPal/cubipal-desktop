@@ -79,6 +79,7 @@ interface FirmwareUpdateInfo {
   chip: string | null;
   blocked_reason: string | null;
   notes_url: string | null;
+  recover_url: string | null;
 }
 
 interface DesktopUpdateInfo {
@@ -106,6 +107,10 @@ let lastConfirmedSkin: string | null = null;
 let skinErrorAt = 0;
 const SKIN_ERROR_MIN_MS = 10_000;
 let firmwareUpdateReady = false;
+// True from "Install Update" until the update ends (or fails).
+let otaInProgress = false;
+let otaNotesUrl: string | null = null;
+let otaRecoverUrl: string | null = null;
 // Only re-check for firmware when the Pal's version changes, or hourly (the
 // backend also caches cubipal.com/firmware/latest.json for an hour).
 const FIRMWARE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -1049,19 +1054,34 @@ async function checkFirmwareUpdate() {
   const descEl = document.getElementById("ota-desc");
   const btnInstall = document.getElementById("btn-install-ota") as HTMLButtonElement | null;
 
+  const btnNotes = document.getElementById("btn-ota-notes");
+  const btnRecover = document.getElementById("btn-ota-recover");
+  // Don't touch the card while an update is running.
+  if (otaInProgress) return;
+
   try {
     const info = await invoke<FirmwareUpdateInfo>("check_firmware_update", { force: false });
     if (info.available && info.latest_version) {
       // An update exists. It can be installed unless the backend says why not
       // (e.g. the Pal doesn't report its board type).
       firmwareUpdateReady = !info.blocked_reason;
+      otaNotesUrl = info.notes_url;
+      otaRecoverUrl = info.recover_url;
       if (titleEl) titleEl.textContent = `Firmware v${info.latest_version} Available`;
+      const current =
+        info.current_version === "unknown version"
+          ? "We can't tell which firmware version your Pal has."
+          : `Your Pal has firmware ${info.current_version}.`;
       if (descEl) {
         descEl.textContent = info.blocked_reason
-          ? `Your Pal is running ${info.current_version}. ${info.blocked_reason}`
-          : `Your Pal is running ${info.current_version}. Update over Wi-Fi; the download is checked against its published size and SHA-256 checksum.`;
+          ? `${current} ${info.blocked_reason}`
+          : `${current} Update over Wi-Fi; the download is checked against its published size and SHA-256 checksum.`;
       }
+      // A fresh offer gets a fresh button (TR2-08).
+      resetOtaInstallUi();
       if (btnInstall) btnInstall.classList.toggle("hidden", !firmwareUpdateReady);
+      btnRecover?.classList.toggle("hidden", !otaRecoverUrl);
+      btnNotes?.classList.toggle("hidden", !otaNotesUrl);
       otaCard.classList.remove("hidden");
     } else {
       firmwareUpdateReady = false;
@@ -1073,11 +1093,36 @@ async function checkFirmwareUpdate() {
   }
 }
 
+/** Puts the Install button and the progress box back to their starting state. */
+function resetOtaInstallUi() {
+  const btnInstall = document.getElementById("btn-install-ota") as HTMLButtonElement | null;
+  const progressBox = document.getElementById("ota-progress-box");
+  const progressBar = document.getElementById("ota-progress-bar");
+  const progressText = document.getElementById("ota-progress-text");
+  if (btnInstall) {
+    btnInstall.disabled = false;
+    btnInstall.textContent = "Install Update";
+  }
+  progressBox?.classList.add("hidden");
+  if (progressBar) progressBar.style.width = "0%";
+  if (progressText) {
+    progressText.textContent = "Preparing...";
+    progressText.classList.remove("text-danger");
+  }
+}
+
 function setupOta() {
   const btnInstall = document.getElementById("btn-install-ota") as HTMLButtonElement | null;
   const progressBox = document.getElementById("ota-progress-box");
   const progressBar = document.getElementById("ota-progress-bar");
   const progressText = document.getElementById("ota-progress-text");
+
+  document.getElementById("btn-ota-recover")?.addEventListener("click", async () => {
+    if (otaRecoverUrl) await openUrl(otaRecoverUrl);
+  });
+  document.getElementById("btn-ota-notes")?.addEventListener("click", async () => {
+    if (otaNotesUrl) await openUrl(otaNotesUrl);
+  });
 
   if (btnInstall) {
     btnInstall.addEventListener("click", async () => {
@@ -1091,11 +1136,13 @@ function setupOta() {
       }
       btnInstall.disabled = true;
       btnInstall.textContent = "Updating...";
+      otaInProgress = true;
       if (progressBox) progressBox.classList.remove("hidden");
 
       try {
         await invoke("install_firmware_update", { force: false });
       } catch (err) {
+        otaInProgress = false;
         // The backend names the failed stage and the Pal's own reason; keep it
         // visible in the card rather than in a passing alert (TST-19).
         if (progressText) {
@@ -1121,12 +1168,18 @@ function setupOta() {
       if (btnInstall) {
         btnInstall.textContent = "Updated!";
       }
+      // The Pal is rebooting. Once it answers again its version is checked
+      // afresh, which hides the card or offers the next update with a reset
+      // Install button (TR2-08).
       setTimeout(async () => {
-        if (progressBox) progressBox.classList.add("hidden");
-        if (progressBar) progressBar.style.width = "0%";
+        otaInProgress = false;
+        lastFirmwareCheckAt = 0;
+        resetOtaInstallUi();
+        document.getElementById("ota-card")?.classList.add("hidden");
         await refreshDeviceStatus();
       }, 5000);
     } else if (p.stage === "error") {
+      otaInProgress = false;
       if (btnInstall) {
         btnInstall.disabled = false;
         btnInstall.textContent = "Retry Update";
