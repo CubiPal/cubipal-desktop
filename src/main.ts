@@ -19,6 +19,8 @@ interface DeviceState {
   ip: string;
   connected: boolean;
   problem?: string;
+  // Firmware too old to check the Pal's identity before the token is sent.
+  legacy_pairing?: boolean;
 }
 
 interface DiscoveredPal {
@@ -172,6 +174,8 @@ async function refreshDeviceStatus() {
     const btnOpenWeb = document.getElementById("btn-open-web") as HTMLButtonElement;
     const btnUnpair = document.getElementById("btn-unpair") as HTMLButtonElement;
     const btnTestChime = document.getElementById("btn-test-chime") as HTMLButtonElement;
+    const noticeEl = document.getElementById("device-notice");
+    noticeEl?.classList.toggle("hidden", !(dev && dev.connected && dev.legacy_pairing));
 
     if (dev && dev.connected) {
       currentDeviceIp = dev.ip;

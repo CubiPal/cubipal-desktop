@@ -54,6 +54,10 @@ pub struct DeviceState {
     pub connected: bool,
     /// Why the app can't talk to the Pal, when it isn't simply offline.
     pub problem: Option<String>,
+    /// The Pal's firmware predates `/api/info`, so its identity can't be
+    /// checked before the token is sent (B-4): suggest a firmware update.
+    #[serde(default)]
+    pub legacy_pairing: bool,
 }
 
 impl DeviceState {
@@ -75,6 +79,7 @@ impl DeviceState {
             ip,
             connected: false,
             problem,
+            legacy_pairing: false,
         }
     }
 }
@@ -181,6 +186,12 @@ pub fn ids_match(stored: &str, seen: &str) -> bool {
     a == b
         || (a.len() == 4 && b.len() == 12 && b.ends_with(&a))
         || (b.len() == 4 && a.len() == 12 && a.ends_with(&b))
+}
+
+/// A 4-digit id: what firmware before 1.1.0 advertised over mDNS. Such a
+/// pairing can't be checked against `/api/info`.
+fn is_legacy_id(id: &str) -> bool {
+    id.len() == 4
 }
 
 /// The better of two matching ids (the full one wins over a legacy suffix).
@@ -334,8 +345,9 @@ impl DeviceInfo {
 enum Probe {
     /// The Pal answered `/api/info` with an id.
     Identified(DeviceInfo),
-    /// Something answered HTTP but gave no id (firmware before 1.1.0 has no
-    /// `/api/info`).
+    /// `/api/info` is 404: firmware before 1.1.0, which doesn't have it.
+    Legacy,
+    /// Something answered HTTP but gave no usable id.
     Anonymous,
     /// Nothing answered.
     Unreachable,
@@ -354,6 +366,9 @@ async fn probe_identity(client: &reqwest::Client, ip: &str) -> Probe {
         Ok(r) => r,
         Err(_) => return Probe::Unreachable,
     };
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Probe::Legacy;
+    }
     if !res.status().is_success() {
         return Probe::Anonymous;
     }
@@ -386,6 +401,9 @@ pub struct Target {
     pub ip: String,
     pub token: String,
     pub id: Option<String>,
+    /// Firmware before 1.1.0, trusted at its stored address without an id
+    /// check (B-4).
+    pub legacy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -420,8 +438,9 @@ impl ResolveError {
 }
 
 struct VerifyCache {
-    /// (ip, id) last verified, and when.
-    verified: Option<(String, String, Instant)>,
+    /// (ip, id) last verified, when, and whether it was a legacy pairing
+    /// accepted without an id check. The id is "" for a pairing with none.
+    verified: Option<(String, String, Instant, bool)>,
     /// When the last failed search for the paired Pal ended.
     last_failed_search: Option<(String, Instant, ResolveError)>,
 }
@@ -448,17 +467,22 @@ pub fn note_unreachable() {
     }
 }
 
-fn cached_verified(ip: &str, id: &str) -> bool {
-    VERIFY_CACHE.lock().is_ok_and(|c| {
-        c.verified
-            .as_ref()
-            .is_some_and(|(vip, vid, at)| vip == ip && vid == id && at.elapsed() < VERIFIED_TTL)
+/// The saved pairing as a target, if it was checked within the last minute.
+fn cached_target(saved: &SavedDevice) -> Option<Target> {
+    let id = saved.id.as_deref().unwrap_or_default();
+    let c = VERIFY_CACHE.lock().ok()?;
+    let (vip, vid, at, legacy) = c.verified.as_ref()?;
+    (*vip == saved.ip && vid == id && at.elapsed() < VERIFIED_TTL).then(|| Target {
+        ip: saved.ip.clone(),
+        token: saved.token.clone(),
+        id: saved.id.clone(),
+        legacy: *legacy,
     })
 }
 
-fn remember_verified(ip: &str, id: &str) {
+fn remember_verified(ip: &str, id: &str, legacy: bool) {
     if let Ok(mut c) = VERIFY_CACHE.lock() {
-        c.verified = Some((ip.to_string(), id.to_string(), Instant::now()));
+        c.verified = Some((ip.to_string(), id.to_string(), Instant::now(), legacy));
         c.last_failed_search = None;
     }
 }
@@ -492,43 +516,67 @@ fn capture_id(saved: &SavedDevice, seen: &str) {
     }
 }
 
+/// What the probe of the stored address means for the saved pairing.
+#[derive(Debug, PartialEq)]
+enum AtStored {
+    /// The paired Pal answers there; this is its (best) id.
+    Verified(String),
+    /// Firmware before 1.1.0 (no `/api/info`) and a pairing without a full
+    /// id: use the stored address, as 0.1.x did, and suggest an update.
+    Legacy,
+    /// Look the Pal up by id over mDNS; `mismatch` when a different device
+    /// answers at the stored address.
+    Search { mismatch: bool },
+    /// No id to search with, and nothing answers.
+    Offline,
+}
+
+/// Decides how to treat the stored address (B-4, B-5). A pairing with a full
+/// id is always checked strictly; only a pairing with no id or a legacy
+/// 4-digit id may fall back to trusting the address of a pre-1.1.0 Pal.
+fn judge_stored(stored_id: Option<&str>, probe: &Probe) -> AtStored {
+    match (stored_id, probe) {
+        (_, Probe::Identified(info)) => {
+            let seen = normalize_id(info.id.as_deref().unwrap_or_default());
+            match stored_id {
+                // Nothing to compare with: record the id before any token
+                // is sent, and check it strictly from then on.
+                None => AtStored::Verified(seen),
+                Some(stored) if ids_match(stored, &seen) => {
+                    AtStored::Verified(preferred_id(stored, &seen))
+                }
+                Some(_) => AtStored::Search { mismatch: true },
+            }
+        }
+        (None, Probe::Legacy | Probe::Anonymous) => AtStored::Legacy,
+        (None, Probe::Unreachable) => AtStored::Offline,
+        (Some(stored), Probe::Legacy) if is_legacy_id(stored) => AtStored::Legacy,
+        (Some(_), _) => AtStored::Search { mismatch: false },
+    }
+}
+
 /// Returns the paired Pal's current address, checked to be the paired Pal,
 /// so the token can be sent to it.
 ///
-/// - The id at the stored address is checked with `GET /api/info` first.
+/// - The id at the stored address is checked with `GET /api/info` first
+///   (never with the token).
 /// - On no answer, or a different id, the Pal is looked up by id over mDNS
 ///   and, if found, its new address is checked and saved.
 /// - The token is never sent to an address that reports a different id.
-/// - Pairings saved before 0.2.0 have no id: there is nothing to check
-///   against, so the stored address is used and the id is captured on the
-///   next successful contact.
+/// - Pairings saved before 0.2.0 have no id: the id `/api/info` reports is
+///   recorded first. Firmware too old to have `/api/info` is used at the
+///   stored address, for a pairing with no id or a legacy 4-digit id only.
 pub async fn resolve_paired_device() -> Result<Target, ResolveError> {
     let saved = load_saved_device().ok_or(ResolveError::NotPaired)?;
-    let Some(stored_id) = saved.id.clone() else {
-        return Ok(Target {
-            ip: saved.ip,
-            token: saved.token,
-            id: None,
-        });
-    };
-    if cached_verified(&saved.ip, &stored_id) {
-        return Ok(Target {
-            ip: saved.ip,
-            token: saved.token,
-            id: Some(stored_id),
-        });
+    if let Some(target) = cached_target(&saved) {
+        return Ok(target);
     }
 
     let _guard = RESOLVE_LOCK.lock().await;
     // Another caller may have finished the check while we waited.
     let saved = load_saved_device().ok_or(ResolveError::NotPaired)?;
-    let stored_id = saved.id.clone().unwrap_or(stored_id);
-    if cached_verified(&saved.ip, &stored_id) {
-        return Ok(Target {
-            ip: saved.ip,
-            token: saved.token,
-            id: Some(stored_id),
-        });
+    if let Some(target) = cached_target(&saved) {
+        return Ok(target);
     }
 
     let client = short_client().map_err(|_| ResolveError::Offline {
@@ -536,22 +584,32 @@ pub async fn resolve_paired_device() -> Result<Target, ResolveError> {
     })?;
 
     let at_stored = probe_identity(&client, &saved.ip).await;
-    let mismatch_at_stored = match &at_stored {
-        Probe::Identified(info) => {
-            let seen = info.id.as_deref().unwrap_or_default();
-            if ids_match(&stored_id, seen) {
-                capture_id(&saved, seen);
-                let id = preferred_id(&stored_id, seen);
-                remember_verified(&saved.ip, &id);
-                return Ok(Target {
-                    ip: saved.ip,
-                    token: saved.token,
-                    id: Some(id),
-                });
-            }
-            true
+    let mismatch_at_stored = match judge_stored(saved.id.as_deref(), &at_stored) {
+        AtStored::Verified(id) => {
+            capture_id(&saved, &id);
+            remember_verified(&saved.ip, &id, false);
+            return Ok(Target {
+                ip: saved.ip,
+                token: saved.token,
+                id: Some(id),
+                legacy: false,
+            });
         }
-        _ => false,
+        AtStored::Legacy => {
+            remember_verified(&saved.ip, saved.id.as_deref().unwrap_or_default(), true);
+            return Ok(Target {
+                ip: saved.ip,
+                token: saved.token,
+                id: saved.id,
+                legacy: true,
+            });
+        }
+        AtStored::Offline => return Err(ResolveError::Offline { ip: saved.ip }),
+        AtStored::Search { mismatch } => mismatch,
+    };
+    // Only a pairing with an id is ever searched for.
+    let Some(stored_id) = saved.id.clone() else {
+        return Err(ResolveError::Offline { ip: saved.ip });
     };
 
     if let Some(err) = recent_failed_search(&stored_id) {
@@ -582,7 +640,7 @@ async fn verify_found(
     stored_id: &str,
     pal: DiscoveredPal,
 ) -> Result<Target, ResolveError> {
-    let id = match probe_identity(client, &pal.ip).await {
+    let (id, legacy) = match probe_identity(client, &pal.ip).await {
         Probe::Identified(info) => {
             let seen = info.id.as_deref().unwrap_or_default();
             if !ids_match(stored_id, seen) {
@@ -590,10 +648,10 @@ async fn verify_found(
                     ip: saved.ip.clone(),
                 });
             }
-            preferred_id(stored_id, seen)
+            (preferred_id(stored_id, seen), false)
         }
         // Firmware before 1.1.0 can only be identified by its mDNS id.
-        Probe::Anonymous => preferred_id(stored_id, &pal.id),
+        Probe::Legacy | Probe::Anonymous => (preferred_id(stored_id, &pal.id), true),
         Probe::Unreachable => {
             return Err(ResolveError::Offline {
                 ip: saved.ip.clone(),
@@ -606,11 +664,12 @@ async fn verify_found(
         })?;
     }
     capture_id(saved, &id);
-    remember_verified(&pal.ip, &id);
+    remember_verified(&pal.ip, &id, legacy);
     Ok(Target {
         ip: pal.ip,
         token: saved.token.clone(),
         id: Some(id),
+        legacy,
     })
 }
 
@@ -728,8 +787,12 @@ pub async fn pair_pal(
         device_id = id.as_deref().map(normalize_id).filter(|i| is_valid_id(i));
     }
     store_device(&clean_ip, token, device_id.as_deref())?;
-    if let Some(ref id) = device_id {
-        remember_verified(&clean_ip, id);
+    // A full id was just confirmed by the Pal itself. (A legacy 4-digit id
+    // is checked on first use instead.)
+    if let Some(ref id) = device_id
+        && !is_legacy_id(id)
+    {
+        remember_verified(&clean_ip, id, false);
     }
     Ok(parsed)
 }
@@ -835,6 +898,7 @@ pub async fn get_paired_device() -> Result<Option<DeviceState>, String> {
         ip: target.ip,
         connected: true,
         problem: None,
+        legacy_pairing: target.legacy,
     }))
 }
 
@@ -996,5 +1060,111 @@ mod tests {
         assert_eq!(info.version(), Some("1.1.0"));
         let legacy: DeviceInfo = serde_json::from_str(r#"{"fw":"1 Nov 12 2026"}"#).unwrap();
         assert_eq!(legacy.version(), Some("1 Nov 12 2026"));
+    }
+
+    fn identified(id: &str) -> Probe {
+        Probe::Identified(DeviceInfo {
+            id: Some(id.to_string()),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn legacy_firmware_is_trusted_only_for_pairings_without_a_full_id() {
+        const FULL: &str = "a0b1c2d3e4f5";
+        use AtStored::*;
+        // No stored id (paired before 0.2.0).
+        assert_eq!(judge_stored(None, &Probe::Legacy), Legacy);
+        assert_eq!(judge_stored(None, &Probe::Anonymous), Legacy);
+        assert_eq!(judge_stored(None, &Probe::Unreachable), Offline);
+        // B-5: the id is learned from /api/info before the token is sent.
+        assert_eq!(
+            judge_stored(None, &identified("A0:B1:C2:D3:E4:F5")),
+            Verified(FULL.into())
+        );
+        // Legacy 4-digit id (scanned from pre-1.1.0 mDNS).
+        assert_eq!(judge_stored(Some("e4f5"), &Probe::Legacy), Legacy);
+        assert_eq!(
+            judge_stored(Some("e4f5"), &identified(FULL)),
+            Verified(FULL.into())
+        );
+        assert_eq!(
+            judge_stored(Some("e4f5"), &identified("0123456789ab")),
+            Search { mismatch: true }
+        );
+        assert_eq!(
+            judge_stored(Some("e4f5"), &Probe::Anonymous),
+            Search { mismatch: false }
+        );
+        assert_eq!(
+            judge_stored(Some("e4f5"), &Probe::Unreachable),
+            Search { mismatch: false }
+        );
+        // A full id stays strict: a 404 at the stored address is never trusted.
+        assert_eq!(
+            judge_stored(Some(FULL), &Probe::Legacy),
+            Search { mismatch: false }
+        );
+        assert_eq!(
+            judge_stored(Some(FULL), &Probe::Anonymous),
+            Search { mismatch: false }
+        );
+        assert_eq!(
+            judge_stored(Some(FULL), &identified("0123456789ab")),
+            Search { mismatch: true }
+        );
+        assert_eq!(
+            judge_stored(Some(FULL), &identified(FULL)),
+            Verified(FULL.into())
+        );
+    }
+
+    /// Answers one HTTP request on localhost with `status` and `body`.
+    async fn serve_once(status: &'static str, body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let reply = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(reply.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        });
+        addr.to_string()
+    }
+
+    #[tokio::test]
+    async fn probe_tells_legacy_firmware_from_other_answers() {
+        let client = short_client().unwrap();
+        let ip = serve_once("404 Not Found", r#"{"ok":false}"#).await;
+        assert!(matches!(probe_identity(&client, &ip).await, Probe::Legacy));
+        let ip = serve_once("500 Internal Server Error", "").await;
+        assert!(matches!(
+            probe_identity(&client, &ip).await,
+            Probe::Anonymous
+        ));
+        let ip = serve_once("200 OK", r#"{"chip":"esp32"}"#).await;
+        assert!(matches!(
+            probe_identity(&client, &ip).await,
+            Probe::Anonymous
+        ));
+        let ip = serve_once("200 OK", r#"{"id":"a0b1c2d3e4f5","chip":"esp32s3"}"#).await;
+        assert!(matches!(
+            probe_identity(&client, &ip).await,
+            Probe::Identified(_)
+        ));
+        // Nothing listening.
+        let free = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ip = free.local_addr().unwrap().to_string();
+        drop(free);
+        assert!(matches!(
+            probe_identity(&client, &ip).await,
+            Probe::Unreachable
+        ));
     }
 }
