@@ -102,6 +102,9 @@ interface OtaProgress {
 let currentDeviceIp: string | null = null;
 // The skin the Pal last reported, to roll the dropdown back if a change fails.
 let lastConfirmedSkin: string | null = null;
+// When a skin change last failed; the error clears on a later good poll.
+let skinErrorAt = 0;
+const SKIN_ERROR_MIN_MS = 10_000;
 let firmwareUpdateReady = false;
 // Only re-check for firmware when the Pal's version changes, or hourly (the
 // backend also caches cubipal.com/firmware/latest.json for an hour).
@@ -192,6 +195,12 @@ async function refreshDeviceStatus() {
           skinEl.value = dev.skin;
         }
       }
+      // The Pal answers again: an old skin error no longer applies (shown
+      // for at least a few seconds so it can be read).
+      const skinError = document.getElementById("skin-error");
+      if (skinError && !skinError.classList.contains("hidden") && Date.now() - skinErrorAt > SKIN_ERROR_MIN_MS) {
+        skinError.classList.add("hidden");
+      }
 
       pill.className = "status-pill online";
       pillText.textContent = "Online";
@@ -217,7 +226,10 @@ async function refreshDeviceStatus() {
       wifiEl.textContent = "Offline";
       fwEl.textContent = "—";
       volumeEl.textContent = "—";
-      if (skinEl) skinEl.disabled = true;
+      if (skinEl) {
+        skinEl.disabled = true;
+        skinEl.value = ""; // "—": the skin is unknown while offline
+      }
 
       pill.className = "status-pill offline";
       pillText.textContent = "Offline";
@@ -235,7 +247,12 @@ async function refreshDeviceStatus() {
       wifiEl.textContent = "—";
       fwEl.textContent = "—";
       volumeEl.textContent = "—";
-      if (skinEl) skinEl.disabled = true;
+      if (skinEl) {
+        skinEl.disabled = true;
+        skinEl.value = "";
+      }
+      lastConfirmedSkin = null;
+      document.getElementById("skin-error")?.classList.add("hidden");
 
       pill.className = "status-pill offline";
       pillText.textContent = "Disconnected";
@@ -341,7 +358,8 @@ function setupActionButtons() {
       lastConfirmedSkin = wanted;
     } catch (e) {
       // Show why, and put the dropdown back to what the Pal really has.
-      if (lastConfirmedSkin) skinEl.value = lastConfirmedSkin;
+      skinEl.value = lastConfirmedSkin ?? "";
+      skinErrorAt = Date.now();
       if (skinError) {
         skinError.textContent = `Couldn't change the skin: ${e}`;
         skinError.classList.remove("hidden");
