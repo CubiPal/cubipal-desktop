@@ -268,7 +268,7 @@ fn select_build(release: &LatestRelease, chip: &str) -> Result<OtaBuild, String>
 
 /// The browser installer for a one-time USB update (TR2-05).
 const RECOVER_URL: &str = "https://cubipal.com/recover";
-const UNKNOWN_CHIP_MSG: &str = "Your Pal's firmware is too old to tell the app which board it has, so this first update has to be installed over USB from the recovery page. That resets your Pal: afterwards, set up its Wi-Fi again and pair this app again. After that, updates come over Wi-Fi.";
+const UNKNOWN_CHIP_MSG: &str = "Your Pal's firmware is too old to tell the app which board it has, so this first update has to be installed over USB from the recovery page. Reinstalling over USB resets your Pal's Wi-Fi and pairing; you'll set it up again afterwards. After that, updates come over Wi-Fi.";
 
 /// What the app would install, or why it can't.
 struct UpdatePlan {

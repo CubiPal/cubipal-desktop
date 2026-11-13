@@ -388,6 +388,8 @@ struct DevicePushPayload {
 }
 
 const CHIME_PLAYED_MSG: &str = "Your Pal played the meeting chime.";
+const CHIME_MUTED_MSG: &str = "Your Pal is muted, so only the light flashed.";
+const CHIME_BUSY_NOTICE: &str = "Your Pal is already playing a chime. One chime at a time.";
 const CHIME_FALLBACK_MSG: &str = "Your Pal's firmware can't play a test chime yet, so it showed a test message instead. Update its firmware to hear the chime.";
 
 /// "Play Test Chime": plays the meeting chime on the Pal and says what
@@ -398,9 +400,12 @@ pub async fn test_device_chime() -> Result<String, String> {
     play_test_chime(&target.ip, &target.token).await
 }
 
-/// `POST /api/chime` (firmware 1.1.0+). Older firmware has no such route
-/// (404), so it falls back to showing "Meeting Chime Test" on the eyes.
-/// A busy Pal (timer or bedtime, 409) gets a plain-language message.
+/// `POST /api/chime` (firmware 1.1.0+):
+/// - 200: played; `"muted": true` means only the light flashed.
+/// - 409: the Pal's own reason (`msg`) is shown as the error.
+/// - 429 ("One chime at a time"): a soft notice, not an error.
+/// - 404 (older firmware, no such route): falls back to showing "Meeting
+///   Chime Test" on the eyes.
 async fn play_test_chime(ip: &str, token: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -417,10 +422,28 @@ async fn play_test_chime(ip: &str, token: &str) -> Result<String, String> {
         .send()
         .await
         .map_err(crate::device::reach_error)?;
-    if res.status().is_success() {
-        return Ok(CHIME_PLAYED_MSG.to_string());
+    let status = res.status();
+    if status.is_success() {
+        let body: serde_json::Value = res.json().await.unwrap_or_default();
+        return Ok(if body["muted"].as_bool() == Some(true) {
+            CHIME_MUTED_MSG
+        } else {
+            CHIME_PLAYED_MSG
+        }
+        .to_string());
     }
-    if res.status() != reqwest::StatusCode::NOT_FOUND {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Ok(CHIME_BUSY_NOTICE.to_string());
+    }
+    if status == reqwest::StatusCode::CONFLICT {
+        let body = res.text().await.unwrap_or_default();
+        let msg = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["msg"].as_str().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty());
+        return Err(msg.unwrap_or_else(|| crate::device::BUSY_MSG.to_string()));
+    }
+    if status != reqwest::StatusCode::NOT_FOUND {
         return Err(crate::device::device_error(res).await);
     }
 
@@ -447,6 +470,17 @@ mod tests {
         let (ip, seen) = serve(vec![("200 OK", r#"{"ok":true}"#)]).await;
         assert_eq!(play_test_chime(&ip, "t").await.unwrap(), CHIME_PLAYED_MSG);
         assert_eq!(*seen.lock().unwrap(), ["POST /api/chime"]);
+        // Muted: only the light flashed.
+        let (ip, _) = serve(vec![("200 OK", r#"{"ok":true,"muted":true}"#)]).await;
+        assert_eq!(play_test_chime(&ip, "t").await.unwrap(), CHIME_MUTED_MSG);
+        // 429: a soft notice, not an error, and no fallback.
+        let (ip, seen) = serve(vec![(
+            "429 Too Many Requests",
+            r#"{"ok":false,"msg":"One chime at a time"}"#,
+        )])
+        .await;
+        assert_eq!(play_test_chime(&ip, "t").await.unwrap(), CHIME_BUSY_NOTICE);
+        assert_eq!(seen.lock().unwrap().len(), 1);
         // Older firmware: 404, then the test message.
         let (ip, seen) = serve(vec![
             ("404 Not Found", "Not found"),
@@ -458,7 +492,7 @@ mod tests {
             *seen.lock().unwrap(),
             ["POST /api/chime", "POST /api/message"]
         );
-        // Busy: a clear message, and no fallback.
+        // 409: the Pal's own reason, and no fallback.
         let (ip, seen) = serve(vec![(
             "409 Conflict",
             r#"{"ok":false,"msg":"In bedtime right now"}"#,
@@ -466,7 +500,7 @@ mod tests {
         .await;
         assert_eq!(
             play_test_chime(&ip, "t").await.unwrap_err(),
-            crate::device::BUSY_MSG
+            "In bedtime right now"
         );
         assert_eq!(seen.lock().unwrap().len(), 1);
         // Busy on old firmware too.
