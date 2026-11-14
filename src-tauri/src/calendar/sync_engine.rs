@@ -52,9 +52,12 @@ pub fn get_saved_calendar_config() -> CalendarSyncConfig {
 }
 
 pub fn save_calendar_config_to_keyring(cfg: &CalendarSyncConfig) -> Result<(), String> {
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_CALENDAR_CONFIG).map_err(|e| e.to_string())?;
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_CALENDAR_CONFIG)
+        .map_err(crate::secret_store::keyring_error)?;
     let json_str = serde_json::to_string(cfg).map_err(|e| e.to_string())?;
-    entry.set_password(&json_str).map_err(|e| e.to_string())?;
+    entry
+        .set_password(&json_str)
+        .map_err(crate::secret_store::keyring_error)?;
     Ok(())
 }
 
