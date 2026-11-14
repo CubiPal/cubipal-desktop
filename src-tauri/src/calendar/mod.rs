@@ -78,8 +78,11 @@ pub async fn connect_google_account(custom_client_id: Option<String>) -> Result<
 
     let (_access, refresh) = google::start_google_auth(&client).await?;
 
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_GOOGLE_REFRESH).map_err(|e| e.to_string())?;
-    entry.set_password(&refresh).map_err(|e| e.to_string())?;
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_GOOGLE_REFRESH)
+        .map_err(crate::secret_store::keyring_error)?;
+    entry
+        .set_password(&refresh)
+        .map_err(crate::secret_store::keyring_error)?;
 
     Ok(())
 }
@@ -102,9 +105,11 @@ pub async fn connect_microsoft_account(custom_client_id: Option<String>) -> Resu
 
     let (_access, refresh) = microsoft::start_microsoft_auth(&client_id).await?;
 
-    let entry =
-        Entry::new(KEYRING_SERVICE, KEYRING_MICROSOFT_REFRESH).map_err(|e| e.to_string())?;
-    entry.set_password(&refresh).map_err(|e| e.to_string())?;
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_MICROSOFT_REFRESH)
+        .map_err(crate::secret_store::keyring_error)?;
+    entry
+        .set_password(&refresh)
+        .map_err(crate::secret_store::keyring_error)?;
 
     Ok(())
 }
@@ -125,8 +130,11 @@ pub async fn set_ics_url(url: String) -> Result<(), String> {
     }
 
     let normalized = ics::normalize_feed_url(clean)?;
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ICS_URL).map_err(|e| e.to_string())?;
-    entry.set_password(&normalized).map_err(|e| e.to_string())?;
+    let entry =
+        Entry::new(KEYRING_SERVICE, KEYRING_ICS_URL).map_err(crate::secret_store::keyring_error)?;
+    entry
+        .set_password(&normalized)
+        .map_err(crate::secret_store::keyring_error)?;
     Ok(())
 }
 

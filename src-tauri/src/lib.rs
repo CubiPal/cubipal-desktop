@@ -1,6 +1,7 @@
 mod calendar;
 mod device;
 mod ota;
+mod secret_store;
 mod settings;
 mod snooze;
 #[cfg(test)]

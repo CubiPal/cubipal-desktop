@@ -123,7 +123,7 @@ fn keyring_get(user: &str) -> Option<String> {
 fn keyring_set(user: &str, value: &str) -> Result<(), String> {
     Entry::new(KEYRING_SERVICE, user)
         .and_then(|e| e.set_password(value))
-        .map_err(|e| e.to_string())
+        .map_err(crate::secret_store::keyring_error)
 }
 
 fn keyring_delete(user: &str) {
