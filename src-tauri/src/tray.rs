@@ -222,6 +222,41 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Whether the desktop can show our tray icon.
+///
+/// On Linux the tray icon is a StatusNotifierItem, which only appears if a
+/// host has registered `org.kde.StatusNotifierWatcher` on the session bus.
+/// ChromeOS (Crostini) and stock GNOME have no such host, so the icon never
+/// shows and the app would be unreachable. Desktops with only a legacy
+/// XEmbed tray report `false` too; they just get the window at startup.
+///
+/// Windows and macOS always have a tray / menu bar.
+#[cfg(target_os = "linux")]
+pub fn tray_host_available() -> bool {
+    use dbus::blocking::Connection;
+    use std::time::Duration;
+
+    let Ok(conn) = Connection::new_session() else {
+        return false;
+    };
+    let proxy = conn.with_proxy(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        Duration::from_millis(500),
+    );
+    let reply: Result<(bool,), dbus::Error> = proxy.method_call(
+        "org.freedesktop.DBus",
+        "NameHasOwner",
+        ("org.kde.StatusNotifierWatcher",),
+    );
+    matches!(reply, Ok((true,)))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn tray_host_available() -> bool {
+    true
+}
+
 pub fn show_preferences(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();

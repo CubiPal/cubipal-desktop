@@ -35,6 +35,14 @@ semver = "1"
 chrono-tz = "0.10"
 rrule = "0.14"
 tauri-plugin-autostart = "2"
+# A second launch (e.g. clicking the app launcher again) focuses the running
+# app instead of starting another, invisible, copy.
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Already in the tree via keyring; used to ask the session bus whether a
+# system-tray host is running (ChromeOS and stock GNOME have none).
+dbus = "0.9"
 
 [profile.release]
 codegen-units = 1
