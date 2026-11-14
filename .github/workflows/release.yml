@@ -58,7 +58,7 @@ jobs:
               repo: context.repo.repo,
               tag_name: tag,
               name: `CubiPal Companion ${tag}`,
-              body: `### CubiPal Desktop Companion ${tag}\n\nDesk companion tray app for meeting countdowns and focus timers over local Wi-Fi.\n\n#### Downloads\n- **Windows:** Download \`.msi\` or \`.exe\` installer below.\n- **macOS:** Download \`.dmg\` installer below.\n\n*Note: the installers are not code-signed by Apple or Microsoft yet, so Windows and macOS warn on first launch; see docs/building-and-releasing.md. In-app updates are signed with the Tauri updater key. Pal firmware is published separately at https://cubipal.com/firmware/latest.json.*`,
+              body: `### CubiPal Desktop Companion ${tag}\n\nDesk companion tray app for meeting countdowns and focus timers over local Wi-Fi.\n\n#### Downloads\n- **Windows:** Download \`.msi\` or \`.exe\` installer below.\n- **macOS:** Download \`.dmg\` installer below.\n- **Linux (x64):** Download \`.AppImage\` (any distro), \`.deb\` (Ubuntu/Debian) or \`.rpm\` (Fedora) below.\n\n*Note: the installers are not code-signed by Apple or Microsoft yet, so Windows and macOS warn on first launch; see docs/building-and-releasing.md. In-app updates are signed with the Tauri updater key. Pal firmware is published separately at https://cubipal.com/firmware/latest.json.*`,
               draft: true,
               prerelease: !isPush
             });
@@ -80,11 +80,22 @@ jobs:
             target: "aarch64-apple-darwin"
           - platform: "macos-latest"
             target: "x86_64-apple-darwin"
+          # 22.04, not latest: an AppImage only runs on distros whose glibc is
+          # at least as new as the one it was built against.
+          - platform: "ubuntu-22.04"
+            target: "x86_64-unknown-linux-gnu"
 
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev patchelf pkg-config
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

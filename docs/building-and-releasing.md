@@ -13,6 +13,11 @@ This guide documents the build process, release pipeline, and installation instr
 - **Platform Dependencies**:
   - **Windows**: Microsoft Visual Studio C++ Build Tools (or Build Tools for Visual Studio 2022) with "Desktop development with C++"
   - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
+  - **Linux (Debian/Ubuntu)**:
+    ```bash
+    sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+      libxdo-dev libssl-dev libdbus-1-dev patchelf pkg-config build-essential
+    ```
 
 ### Commands
 ```bash
@@ -29,6 +34,7 @@ npm run tauri build
 Production installers are placed in `src-tauri/target/release/bundle/`:
 - Windows: `.msi` and `.exe` (NSIS installer) in `bundle/msi/` and `bundle/nsis/`
 - macOS: `.dmg` and `.app` in `bundle/dmg/` and `bundle/macos/`
+- Linux: `.AppImage`, `.deb` and `.rpm` in `bundle/appimage/`, `bundle/deb/` and `bundle/rpm/`
 
 ---
 
@@ -56,9 +62,10 @@ To create and publish a new release:
 The workflow creates a draft release, builds every platform into it, then publishes it (tag pushes only; a manual run leaves a draft prerelease).
 
 ### Matrix Builds
-GitHub Actions builds four targets:
+GitHub Actions builds five targets:
 - **Windows x64** and **Windows ARM64** (`windows-latest`): NSIS `.exe` and `.msi`
 - **macOS Apple Silicon** and **macOS Intel** (`macos-latest`, cross-compiling the Intel build): `.dmg`
+- **Linux x64** (`ubuntu-22.04`): `.AppImage`, `.deb` and `.rpm`. Built on 22.04 rather than `ubuntu-latest` so the AppImage runs on any distro with glibc 2.35 or newer. The in-app updater only updates the AppImage; `.deb`/`.rpm` users update by installing the new package.
 
 `tauri-action` uploads the installers plus the signed updater artifacts and `latest.json` to the release. The in-app updater reads
 `https://github.com/CubiPal/cubipal-desktop/releases/latest/download/latest.json`.
@@ -98,4 +105,14 @@ For the beta, the installers are distributed through [GitHub Releases](https://g
 4. Open **System Settings** > **Privacy & Security**.
 5. Scroll down to the **Security** section and click **"Open Anyway"** next to CubiPal.
 6. Click **"Open"** when prompted. Subsequent launches will open directly from your menu bar without warnings.
+
+### Linux
+- **AppImage (any distro):** `chmod +x CubiPal_<version>_amd64.AppImage`, then run it. Some distros need `libfuse2` installed first to run AppImages.
+- **Debian/Ubuntu:** `sudo apt install ./CubiPal_<version>_amd64.deb`
+- **Fedora:** `sudo dnf install ./CubiPal-<version>-1.x86_64.rpm`
+
+Notes:
+- Saved logins and the Pal pairing token go in the Secret Service keyring (GNOME Keyring or KWallet). A desktop without one (some minimal window managers) can't save them, so you'd have to sign in again after each restart.
+- The tray icon needs StatusNotifier/AppIndicator support. KDE, Cinnamon, XFCE and Ubuntu's GNOME have it; stock GNOME (e.g. Fedora) needs the "AppIndicator and KStatusNotifierItem Support" extension.
+- On Linux, clicking the tray icon opens the menu rather than the window; use **Preferences...** in the menu.
 
