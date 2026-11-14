@@ -81,6 +81,12 @@ fn start_update_checker(app: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first so a second launch exits before any other
+        // plugin or the setup hook runs. Launching again shows the window,
+        // which is the only way in on desktops without a tray.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_preferences(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -90,6 +96,11 @@ pub fn run() {
         ))
         .setup(|app| {
             tray::create_tray(app.handle())?;
+            // No tray to click (ChromeOS, stock GNOME): open the window now,
+            // or the app runs with nothing on screen.
+            if !tray::tray_host_available() {
+                tray::show_preferences(app.handle());
+            }
             calendar::start_background_sync(app.handle().clone());
             start_update_checker(app.handle().clone());
             Ok(())
