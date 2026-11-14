@@ -11,7 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-22.04]
+        # macos-15-intel: Intel Macs (the x86_64-apple-darwin release build),
+        # on their own runner queue, apart from macos-latest's arm64 one
+        os: [windows-latest, macos-latest, macos-15-intel, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
