@@ -114,5 +114,6 @@ For the beta, the installers are distributed through [GitHub Releases](https://g
 Notes:
 - Saved logins and the Pal pairing token go in the Secret Service keyring (GNOME Keyring or KWallet). A desktop without one (some minimal window managers) can't save them, so you'd have to sign in again after each restart.
 - The tray icon needs StatusNotifier/AppIndicator support. KDE, Cinnamon, XFCE and Ubuntu's GNOME have it; stock GNOME (e.g. Fedora) needs the "AppIndicator and KStatusNotifierItem Support" extension.
+- Without a tray host (ChromeOS Linux, stock GNOME without that extension), CubiPal opens the Preferences window at startup instead. Closing the window keeps CubiPal running in the background; launch it again from the app launcher to bring the window back. Only one copy runs at a time.
 - On Linux, clicking the tray icon opens the menu rather than the window; use **Preferences...** in the menu.
 
