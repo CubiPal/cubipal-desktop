@@ -1,6 +1,10 @@
 mod calendar;
 mod device;
 mod ota;
+mod settings;
+mod snooze;
+#[cfg(test)]
+mod test_http;
 mod tray;
 
 use std::time::Duration;
@@ -42,15 +46,23 @@ async fn install_desktop_update(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks for a new app version 30 s after startup and then every 24 h,
+/// unless "Automatic Updates" is off (then nothing is fetched at all; the
+/// tray's "Check for Updates..." still works).
 fn start_update_checker(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Startup delay: wait 30s before first update check
         tokio::time::sleep(Duration::from_secs(30)).await;
 
         loop {
-            if let Ok(updater) = app.updater()
+            if settings::load(&app).auto_update
+                && let Ok(updater) = app.updater()
                 && let Ok(Some(update)) = updater.check().await
             {
+                // Don't pop up while alerts are snoozed; offer it afterwards.
+                while snooze::is_snoozed() {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
                 let _ = app.emit(
                     "desktop-update-available",
                     serde_json::json!({
@@ -72,6 +84,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             tray::create_tray(app.handle())?;
             calendar::start_background_sync(app.handle().clone());
@@ -88,6 +104,9 @@ pub fn run() {
             show_preferences_window,
             check_desktop_update,
             install_desktop_update,
+            settings::get_general_settings,
+            settings::set_autostart,
+            settings::set_auto_update,
             device::scan_for_pals,
             device::pair_pal,
             device::get_paired_device,
@@ -105,11 +124,12 @@ pub fn run() {
             calendar::save_calendar_sync_config,
             calendar::trigger_calendar_sync,
             calendar::sync_calendar_events,
-            calendar::push_events_to_device,
             calendar::test_device_chime,
+            snooze::get_snooze_state,
+            snooze::resume_alerts,
+            snooze::set_clock_format,
             ota::check_firmware_update,
             ota::install_firmware_update,
-            ota::install_local_firmware,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

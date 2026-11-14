@@ -74,6 +74,14 @@
             <p>Connect and configure your physical CubiPal desk companion.</p>
           </div>
 
+          <div class="card snooze-banner hidden" id="snooze-banner" role="status">
+            <div>
+              <strong id="snooze-text">Alerts snoozed</strong>
+              <p class="text-muted text-xs">Meetings that start before then are kept off your Pal.</p>
+            </div>
+            <button class="btn btn-secondary text-xs btn-nowrap" id="btn-resume-alerts">Resume Alerts</button>
+          </div>
+
           <div class="card device-card">
             <div class="device-hero">
               <div class="device-avatar">
@@ -84,9 +92,10 @@
               </div>
               <div class="device-main-info">
                 <h4 id="device-name">No CubiPal Paired</h4>
-                <p id="device-subtitle" class="text-muted">Put your Pal into pairing mode to begin</p>
+                <p id="device-subtitle" class="text-muted">Click Scan Network to find your Pal on this Wi-Fi, then use the show-code gesture to get its pairing code.</p>
+                <p id="device-notice" class="device-notice text-xs hidden">Update your Pal's firmware for secure pairing.</p>
               </div>
-              <button class="btn btn-secondary" id="btn-scan">Scan Network</button>
+              <button class="btn btn-secondary btn-nowrap" id="btn-scan">Scan Network</button>
             </div>
 
             <hr class="divider" />
@@ -110,15 +119,17 @@
               </div>
               <div class="spec-item">
                 <span class="spec-label">Magnetic Skin</span>
-                <select id="spec-skin" class="skin-select" style="font-size:12px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;margin-top:2px;" disabled>
+                <select id="spec-skin" class="skin-select" aria-label="Magnetic skin" style="font-size:12px;background:var(--bg-card);color:var(--text-main);border:1px solid var(--border-color);border-radius:4px;padding:2px 4px;margin-top:2px;" disabled>
+                  <option value="" disabled selected>&mdash;</option>
                   <option value="robot">Robot (Default)</option>
-                  <option value="capybara">Capybara (Blush)</option>
-                  <option value="tiger">Tiger (Cheek Pads)</option>
-                  <option value="puppy">Puppy (Tongue)</option>
-                  <option value="dragon">Dragon (Ember Blush)</option>
-                  <option value="dinosaur">Dinosaur (Coral)</option>
-                  <option value="unicorn">Unicorn (Violet)</option>
+                  <option value="capybara">Capybara</option>
+                  <option value="tiger">Tiger</option>
+                  <option value="puppy">Puppy</option>
+                  <option value="dragon">Dragon</option>
+                  <option value="dinosaur">Dinosaur</option>
+                  <option value="unicorn">Unicorn</option>
                 </select>
+                <div class="error-msg hidden" id="skin-error" role="alert"></div>
               </div>
             </div>
 
@@ -146,7 +157,9 @@
                 <strong id="ota-title">Firmware Update Available</strong>
                 <p class="text-muted text-xs" id="ota-desc">A new version is available for your CubiPal.</p>
               </div>
-              <div class="ota-actions flex gap-2">
+              <div class="ota-actions">
+                <button class="btn btn-secondary text-xs hidden" id="btn-ota-notes">What's New</button>
+                <button class="btn btn-primary text-xs hidden" id="btn-ota-recover">Open Recovery Page</button>
                 <button class="btn btn-primary text-xs" id="btn-install-ota">Install Update</button>
               </div>
             </div>
@@ -161,7 +174,7 @@
           <div class="card info-box">
             <div class="info-icon">💡</div>
             <div class="info-text">
-              <strong>Pairing Tip:</strong> The show-code gesture works any time. Tap and hold the crown touch point for 3 seconds, let go, then hold again for 3 seconds within 5 seconds.
+              <strong>Pairing Tip:</strong> The show-code gesture works any time. Touch and hold the touch point (the flat top of its head) for 3 seconds, let go, then hold again for 3 seconds within 5 seconds.
             </div>
           </div>
         </section>
@@ -192,10 +205,10 @@
                 <div class="account-icon ms-icon">M</div>
                 <div>
                   <strong>Microsoft 365 / Outlook</strong>
-                  <div class="text-muted text-sm" id="ms-status">Not connected</div>
+                  <div class="text-muted text-sm" id="ms-status">Outlook / Microsoft 365 support is coming soon</div>
                 </div>
               </div>
-              <button class="btn btn-secondary" id="btn-connect-ms">Connect</button>
+              <button class="btn btn-secondary" id="btn-connect-ms" disabled>Coming Soon</button>
             </div>
 
             <hr class="divider" />
@@ -291,6 +304,7 @@
               </div>
               <button class="btn btn-secondary" id="btn-test-chime" disabled>Play Test Chime</button>
             </div>
+            <p class="text-xs mt-2 hidden" id="chime-status" role="status"></p>
           </div>
         </section>
 
@@ -308,13 +322,13 @@
                   <strong>Launch at Startup</strong>
                   <p class="text-muted text-xs">Start CubiPal minimized in the system tray when logging in</p>
                 </div>
-                <input type="checkbox" id="toggle-autostart" class="toggle-switch" checked />
+                <input type="checkbox" id="toggle-autostart" class="toggle-switch" />
               </label>
 
               <label class="toggle-row">
                 <div class="toggle-label">
                   <strong>Automatic Updates</strong>
-                  <p class="text-muted text-xs">Notify when a new companion app or firmware version is available</p>
+                  <p class="text-muted text-xs">Check daily for a new version of this app and offer to install it</p>
                 </div>
                 <input type="checkbox" id="toggle-autoupdate" class="toggle-switch" checked />
               </label>
@@ -325,9 +339,9 @@
             <div class="flex-between">
               <div>
                 <strong>CubiPal Companion</strong>
-                <div class="text-muted text-xs">Version 0.1.0-dev &bull; Open Source (MIT)</div>
+                <div class="text-muted text-xs"><span id="app-version">Version</span> &bull; Open Source (MIT)</div>
               </div>
-              <a href="https://github.com/CubiPal/cubipal-desktop/releases" target="_blank" class="btn btn-secondary text-xs">View Releases</a>
+              <a href="https://github.com/CubiPal/cubipal-desktop/releases/latest" target="_blank" class="btn btn-secondary text-xs">View Releases</a>
             </div>
             <div class="legal-links mt-3 text-xs text-muted">
               <a href="https://cubipal.com/privacy" target="_blank">Privacy Policy</a> &bull;
@@ -341,16 +355,16 @@
 
     <!-- Pairing Modal -->
     <div class="modal-backdrop hidden" id="pairing-modal">
-      <div class="modal-dialog">
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-pal-name" aria-describedby="pairing-instructions">
         <div class="modal-header">
           <h4 id="modal-pal-name">Pair with CubiPal</h4>
-          <button class="modal-close" id="btn-modal-close">&times;</button>
+          <button type="button" class="modal-close" id="btn-modal-close" aria-label="Close">&times;</button>
         </div>
         <div class="modal-body">
-          <div class="pairing-instructions">
+          <div class="pairing-instructions" id="pairing-instructions">
             <p class="mb-2"><strong>Touch Pattern:</strong></p>
             <ol class="instruction-steps">
-              <li>Touch and hold the crown touch point for <strong>3 seconds</strong>.</li>
+              <li>Touch and hold the touch point (the flat top of its head) for <strong>3 seconds</strong>.</li>
               <li>Let go, then hold again for <strong>3 seconds</strong> (within 5 seconds).</li>
               <li>Your Pal's eyes will show the <strong>8-digit pairing code</strong>.</li>
             </ol>
@@ -358,14 +372,34 @@
 
           <div class="code-entry mt-4">
             <label for="input-pairing-code" class="spec-label">Enter 8-Digit Code</label>
-            <input type="text" id="input-pairing-code" class="code-input" placeholder="4821 7390" maxlength="9" />
+            <input type="text" id="input-pairing-code" class="code-input" placeholder="4821 7390" maxlength="9" inputmode="numeric" autocomplete="one-time-code" aria-describedby="pairing-error-msg" />
             <input type="hidden" id="modal-target-ip" />
-            <div class="error-msg hidden" id="pairing-error-msg"></div>
+            <input type="hidden" id="modal-target-id" />
+            <div class="error-msg hidden" id="pairing-error-msg" role="alert"></div>
           </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" id="btn-modal-cancel">Cancel</button>
           <button class="btn btn-primary" id="btn-modal-pair">Pair Pal</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Focus dialog (tray "Custom Focus...") -->
+    <div class="modal-backdrop hidden" id="focus-modal">
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="focus-modal-title">
+        <div class="modal-header">
+          <h4 id="focus-modal-title">Start a Focus Timer</h4>
+          <button type="button" class="modal-close" id="btn-focus-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <label for="input-focus-minutes" class="spec-label">Minutes (1&ndash;180)</label>
+          <input type="number" id="input-focus-minutes" class="number-input" min="1" max="180" step="1" value="25" inputmode="numeric" aria-describedby="focus-error-msg" />
+          <div class="error-msg hidden" id="focus-error-msg" role="alert"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btn-focus-cancel">Cancel</button>
+          <button class="btn btn-primary" id="btn-focus-start">Start Timer</button>
         </div>
       </div>
     </div>

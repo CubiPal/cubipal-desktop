@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       test_tag:
-        description: "Release tag (e.g. v0.1.0-test)"
+        description: "Release tag (e.g. v0.2.0-test)"
         required: false
         default: ""
 
@@ -22,30 +22,43 @@ jobs:
     steps:
       - name: Determine tag name
         id: get-tag
+        # Inputs reach the script as environment variables, never pasted into
+        # it, and the tag is validated before use (B-10).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TEST_TAG: ${{ github.event.inputs.test_tag }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.test_tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$TEST_TAG"
             if [ -z "$TAG" ]; then
-              TAG="v0.1.0-test.${{ github.run_number }}"
+              TAG="v0.2.0-test.$RUN_NUMBER"
             fi
           else
-            TAG="${{ github.ref_name }}"
+            TAG="$REF_NAME"
           fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release tag: must look like v1.2.3 or v1.2.3-test.4"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         id: create-release
         uses: actions/github-script@v7
+        env:
+          TAG: ${{ steps.get-tag.outputs.tag }}
         with:
           script: |
-            const tag = '${{ steps.get-tag.outputs.tag }}';
+            const tag = process.env.TAG;
             const isPush = context.eventName === 'push';
             const release = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
               name: `CubiPal Companion ${tag}`,
-              body: `### CubiPal Desktop Companion ${tag}\n\nDesk companion tray app for meeting countdowns and focus timers over local Wi-Fi.\n\n#### Downloads\n- **Windows:** Download \`.msi\` or \`.exe\` installer below.\n- **macOS:** Download \`.dmg\` installer below.\n\n*Note: Binaries in v1 are unsigned. Follow the included instructions to bypass standard OS warnings on first run.*`,
+              body: `### CubiPal Desktop Companion ${tag}\n\nDesk companion tray app for meeting countdowns and focus timers over local Wi-Fi.\n\n#### Downloads\n- **Windows:** Download \`.msi\` or \`.exe\` installer below.\n- **macOS:** Download \`.dmg\` installer below.\n\n*Note: the installers are not code-signed by Apple or Microsoft yet, so Windows and macOS warn on first launch; see docs/building-and-releasing.md. In-app updates are signed with the Tauri updater key. Pal firmware is published separately at https://cubipal.com/firmware/latest.json.*`,
               draft: true,
               prerelease: !isPush
             });
@@ -98,47 +111,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Read at compile time with option_env!. All optional: without
+          # MICROSOFT_CLIENT_ID the app shows Outlook as "coming soon".
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           includeUpdaterJson: true
           args: --target ${{ matrix.target }}
 
-  link-firmware:
-    needs: create-release
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Fetch and attach firmware assets
-        env:
-          GH_TOKEN: ${{ secrets.FW_RELEASE_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p firmware_dl
-          cd firmware_dl
-          echo "Checking CubiPal/CubiPal for firmware release assets..."
-          LATEST_FW_TAG=$(gh release view --repo CubiPal/CubiPal --json tagName -q .tagName 2>/dev/null || true)
-          if [ -n "$LATEST_FW_TAG" ]; then
-            echo "Found firmware release: $LATEST_FW_TAG"
-            gh release download $LATEST_FW_TAG --repo CubiPal/CubiPal --pattern "*.bin*" || true
-            for bin in *.bin; do
-              if [ -f "$bin" ]; then
-                if [ ! -f "$bin.sha256" ] && [ ! -f "${bin%.bin}.sha256" ]; then
-                  sha256sum "$bin" | awk '{print $1}' > "$bin.sha256"
-                fi
-                gh release upload ${{ needs.create-release.outputs.tag_name }} "$bin"* --repo ${{ github.repository }} --clobber
-              fi
-            done
-          else
-            echo "::warning ::No firmware releases found in CubiPal/CubiPal. Skipping firmware linking."
-          fi
-
   publish-release:
-    needs: [create-release, build-release, link-firmware]
+    needs: [create-release, build-release]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -146,10 +130,14 @@ jobs:
       - name: Publish Release (if tag push)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          TAG: ${{ needs.create-release.outputs.tag_name }}
+          REPO: ${{ github.repository }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
-            echo "Publishing release ${{ needs.create-release.outputs.tag_name }}..."
-            gh release edit ${{ needs.create-release.outputs.tag_name }} --draft=false --repo ${{ github.repository }}
+          if [ "$EVENT_NAME" = "push" ] && [[ "$REF" =~ ^refs/tags/v ]]; then
+            echo "Publishing release $TAG..."
+            gh release edit "$TAG" --draft=false --repo "$REPO"
           else
             echo "Workflow run was triggered manually. Leaving release as draft for inspection."
           fi

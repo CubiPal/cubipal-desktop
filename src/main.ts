@@ -11,9 +11,16 @@ interface DeviceState {
   ssid?: string;
   rssi?: number;
   fw?: string;
+  fw_label: string;
+  chip?: string;
+  model?: string;
+  id?: string;
   skin?: string;
   ip: string;
   connected: boolean;
+  problem?: string;
+  // Firmware too old to check the Pal's identity before the token is sent.
+  legacy_pairing?: boolean;
 }
 
 interface DiscoveredPal {
@@ -22,6 +29,7 @@ interface DiscoveredPal {
   ip: string;
   port: number;
   model: string;
+  chip?: string;
   fw: string;
 }
 
@@ -37,6 +45,7 @@ interface PairResponse {
 interface ConnectedAccounts {
   google_connected: boolean;
   microsoft_connected: boolean;
+  microsoft_available: boolean;
   ics_url: string | null;
 }
 
@@ -65,11 +74,24 @@ interface CalendarEvent {
 
 interface FirmwareUpdateInfo {
   available: boolean;
-  latest_version: string;
+  latest_version: string | null;
   current_version: string;
-  download_url: string | null;
-  sha256: string | null;
-  release_notes: string | null;
+  chip: string | null;
+  blocked_reason: string | null;
+  notes_url: string | null;
+  recover_url: string | null;
+}
+
+interface DesktopUpdateInfo {
+  version: string;
+  current_version: string;
+  body?: string;
+}
+
+interface GeneralSettings {
+  autostart: boolean;
+  auto_update: boolean;
+  app_version: string;
 }
 
 interface OtaProgress {
@@ -79,30 +101,85 @@ interface OtaProgress {
 }
 
 let currentDeviceIp: string | null = null;
-let activeFirmwareUrl: string | null = null;
-let activeFirmwareSha256: string | null = null;
+// The skin the Pal last reported, to roll the dropdown back if a change fails.
+let lastConfirmedSkin: string | null = null;
+// When a skin change last failed; the error clears on a later good poll.
+let skinErrorAt = 0;
+const SKIN_ERROR_MIN_MS = 10_000;
+let firmwareUpdateReady = false;
+// True from "Install Update" until the update ends (or fails).
+let otaInProgress = false;
+let otaNotesUrl: string | null = null;
+let otaRecoverUrl: string | null = null;
+// Only re-check for firmware when the Pal's version changes, or hourly (the
+// backend also caches cubipal.com/firmware/latest.json for an hour).
+const FIRMWARE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+let lastFirmwareCheckAt = 0;
+let lastFirmwareCheckVersion: string | undefined;
 
 document.addEventListener("DOMContentLoaded", async () => {
+  reportClockFormat();
+  setupSnoozeBanner();
   setupTabs();
   setupPairingModal();
+  setupFocusModal();
   setupActionButtons();
   setupCalendarTab();
   setupRemindersTab();
   setupTrayListeners();
   setupOta();
+  setupGeneralTab();
 
   // Load initial paired device status and calendars
   await refreshDeviceStatus();
   await refreshConnectedAccounts();
   await loadCalendarSyncConfig();
-  await syncAndPreviewEvents();
+  // Preview only: the Rust sync engine pushes to the Pal at startup and
+  // every 5 minutes, and sends "calendar-events-updated" (KAN-33).
+  await syncAndPreviewEvents(false);
 
   // Poll state every 15 seconds
   setInterval(refreshDeviceStatus, 15000);
-
-  // Background calendar sync and event push every 5 minutes (KAN-33)
-  setInterval(syncAndPreviewEvents, 300000);
 });
+
+// --------------------------------------------------------------------------
+// Snooze (TR2-09): the tray's snooze shown in the window, with Resume
+// --------------------------------------------------------------------------
+
+/** Tells the backend whether this locale uses a 12-hour clock (tray text). */
+function reportClockFormat() {
+  const onePm = new Date(2020, 0, 1, 13, 0).toLocaleTimeString(undefined, { hour: "numeric" });
+  invoke("set_clock_format", { twelveHour: !onePm.includes("13") }).catch(() => {});
+}
+
+function showSnooze(until: number | null) {
+  const banner = document.getElementById("snooze-banner");
+  const text = document.getElementById("snooze-text");
+  if (!banner || !text) return;
+  if (until && until * 1000 > Date.now()) {
+    const time = new Date(until * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    text.textContent = `Alerts snoozed until ${time}`;
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+}
+
+async function setupSnoozeBanner() {
+  document.getElementById("btn-resume-alerts")?.addEventListener("click", async () => {
+    try {
+      await invoke("resume_alerts");
+    } catch (err) {
+      alert(`Couldn't resume alerts: ${err}`);
+    }
+  });
+  await listen<number | null>("snooze-changed", (event) => showSnooze(event.payload));
+  try {
+    showSnooze(await invoke<number | null>("get_snooze_state"));
+  } catch {
+    showSnooze(null);
+  }
+}
 
 function setupTabs() {
   const navItems = document.querySelectorAll<HTMLButtonElement>(".nav-item");
@@ -124,7 +201,7 @@ function setupTabs() {
 
       if (targetTab === "calendars") {
         await refreshConnectedAccounts();
-        await syncAndPreviewEvents();
+        await syncAndPreviewEvents(false);
       }
     });
   });
@@ -146,6 +223,8 @@ async function refreshDeviceStatus() {
     const btnOpenWeb = document.getElementById("btn-open-web") as HTMLButtonElement;
     const btnUnpair = document.getElementById("btn-unpair") as HTMLButtonElement;
     const btnTestChime = document.getElementById("btn-test-chime") as HTMLButtonElement;
+    const noticeEl = document.getElementById("device-notice");
+    noticeEl?.classList.toggle("hidden", !(dev && dev.connected && dev.legacy_pairing));
 
     if (dev && dev.connected) {
       currentDeviceIp = dev.ip;
@@ -153,13 +232,20 @@ async function refreshDeviceStatus() {
       subtitleEl.textContent = "Paired and connected over local Wi-Fi";
       ipEl.textContent = `http://${dev.ip}`;
       wifiEl.textContent = dev.ssid ? `${dev.ssid} (${dev.rssi || 0} dBm)` : "Connected";
-      fwEl.textContent = dev.fw || "v1.0.0";
+      fwEl.textContent = dev.fw_label;
       volumeEl.textContent = dev.muted ? "Muted" : `Level ${dev.volume ?? 3}`;
       if (skinEl) {
         skinEl.disabled = false;
+        if (dev.skin) lastConfirmedSkin = dev.skin;
         if (document.activeElement !== skinEl && dev.skin) {
           skinEl.value = dev.skin;
         }
+      }
+      // The Pal answers again: an old skin error no longer applies (shown
+      // for at least a few seconds so it can be read).
+      const skinError = document.getElementById("skin-error");
+      if (skinError && !skinError.classList.contains("hidden") && Date.now() - skinErrorAt > SKIN_ERROR_MIN_MS) {
+        skinError.classList.add("hidden");
       }
 
       pill.className = "status-pill online";
@@ -168,17 +254,28 @@ async function refreshDeviceStatus() {
       btnOpenWeb.disabled = false;
       btnUnpair.disabled = false;
       if (btnTestChime) btnTestChime.disabled = false;
-      await checkFirmwareUpdate();
+      if (
+        dev.fw !== lastFirmwareCheckVersion ||
+        Date.now() - lastFirmwareCheckAt > FIRMWARE_CHECK_INTERVAL_MS
+      ) {
+        lastFirmwareCheckAt = Date.now();
+        lastFirmwareCheckVersion = dev.fw;
+        await checkFirmwareUpdate();
+      }
     } else if (dev && !dev.connected) {
       document.getElementById("ota-card")?.classList.add("hidden");
+      lastFirmwareCheckAt = 0; // re-check as soon as the Pal is back
       currentDeviceIp = dev.ip;
       nameEl.textContent = `${dev.robot} (Offline)`;
-      subtitleEl.textContent = "Cannot reach device on the network";
-      ipEl.textContent = `http://${dev.ip} (Unreachable)`;
+      subtitleEl.textContent = dev.problem || "Cannot reach device on the network";
+      ipEl.textContent = dev.ip ? `http://${dev.ip} (Unreachable)` : "Unreachable";
       wifiEl.textContent = "Offline";
       fwEl.textContent = "—";
       volumeEl.textContent = "—";
-      if (skinEl) skinEl.disabled = true;
+      if (skinEl) {
+        skinEl.disabled = true;
+        skinEl.value = ""; // "—": the skin is unknown while offline
+      }
 
       pill.className = "status-pill offline";
       pillText.textContent = "Offline";
@@ -188,14 +285,20 @@ async function refreshDeviceStatus() {
       if (btnTestChime) btnTestChime.disabled = true;
     } else {
       document.getElementById("ota-card")?.classList.add("hidden");
+      lastFirmwareCheckAt = 0; // re-check as soon as the Pal is back
       currentDeviceIp = null;
       nameEl.textContent = "No CubiPal Paired";
-      subtitleEl.textContent = "Put your Pal into pairing mode to begin";
+      subtitleEl.textContent = "Click Scan Network to find your Pal on this Wi-Fi, then use the show-code gesture to get its pairing code.";
       ipEl.textContent = "Not connected";
       wifiEl.textContent = "—";
       fwEl.textContent = "—";
       volumeEl.textContent = "—";
-      if (skinEl) skinEl.disabled = true;
+      if (skinEl) {
+        skinEl.disabled = true;
+        skinEl.value = "";
+      }
+      lastConfirmedSkin = null;
+      document.getElementById("skin-error")?.classList.add("hidden");
 
       pill.className = "status-pill offline";
       pillText.textContent = "Disconnected";
@@ -232,30 +335,37 @@ function setupActionButtons() {
       } else {
         scanTitle.textContent = `Discovered CubiPals (${pals.length})`;
         scanList.innerHTML = "";
+        // mDNS names and TXT values come from any device on the LAN: only ever
+        // insert them as text, never as HTML.
         pals.forEach((pal) => {
           const row = document.createElement("div");
           row.className = "discovered-row";
-          row.innerHTML = `
-            <div class="discovered-info">
-              <strong>${pal.name}</strong>
-              <div class="discovered-meta">${pal.ip} &bull; Model ${pal.model} &bull; FW ${pal.fw}</div>
-            </div>
-            <button class="btn btn-primary btn-pair-pal" data-ip="${pal.ip}" data-name="${pal.name}">Pair</button>
-          `;
-          scanList.appendChild(row);
-        });
 
-        scanList.querySelectorAll<HTMLButtonElement>(".btn-pair-pal").forEach((btn) => {
-          btn.addEventListener("click", () => {
-            const ip = btn.getAttribute("data-ip")!;
-            const name = btn.getAttribute("data-name")!;
-            openPairingModal(ip, name);
-          });
+          const info = document.createElement("div");
+          info.className = "discovered-info";
+          const nameEl = document.createElement("strong");
+          nameEl.textContent = pal.name;
+          const meta = document.createElement("div");
+          meta.className = "discovered-meta";
+          meta.textContent = `${pal.ip} \u2022 Model ${pal.model} \u2022 Firmware ${pal.fw}`;
+          info.append(nameEl, meta);
+
+          const btn = document.createElement("button");
+          btn.className = "btn btn-primary btn-pair-pal";
+          btn.textContent = "Pair";
+          btn.setAttribute("aria-label", `Pair with ${pal.name}`);
+          btn.addEventListener("click", () => openPairingModal(pal.ip, pal.name, pal.id));
+
+          row.append(info, btn);
+          scanList.appendChild(row);
         });
       }
     } catch (e) {
       scanTitle.textContent = "Scan Error";
-      scanList.innerHTML = `<p class="text-muted text-sm">${e}</p>`;
+      const msg = document.createElement("p");
+      msg.className = "text-muted text-sm";
+      msg.textContent = String(e);
+      scanList.replaceChildren(msg);
     }
   });
 
@@ -263,7 +373,7 @@ function setupActionButtons() {
   btnManualIp.addEventListener("click", () => {
     const ip = prompt("Enter CubiPal IP address or hostname (e.g. 192.168.1.100 or cubipal-ab12.local):");
     if (ip && ip.trim()) {
-      openPairingModal(ip.trim(), "CubiPal");
+      openPairingModal(ip.trim(), "CubiPal", null);
     }
   });
 
@@ -283,12 +393,25 @@ function setupActionButtons() {
   });
 
   const skinEl = document.getElementById("spec-skin") as HTMLSelectElement | null;
+  const skinError = document.getElementById("skin-error");
   skinEl?.addEventListener("change", async () => {
     if (!skinEl.value) return;
+    const wanted = skinEl.value;
+    skinError?.classList.add("hidden");
+    skinEl.disabled = true;
     try {
-      await invoke("set_device_skin", { skin: skinEl.value });
-    } catch (e: any) {
-      console.error("Failed to update skin:", e);
+      await invoke("set_device_skin", { skin: wanted });
+      lastConfirmedSkin = wanted;
+    } catch (e) {
+      // Show why, and put the dropdown back to what the Pal really has.
+      skinEl.value = lastConfirmedSkin ?? "";
+      skinErrorAt = Date.now();
+      if (skinError) {
+        skinError.textContent = `Couldn't change the skin: ${e}`;
+        skinError.classList.remove("hidden");
+      }
+    } finally {
+      skinEl.disabled = false;
     }
   });
 }
@@ -300,6 +423,7 @@ function setupPairingModal() {
   const btnPair = document.getElementById("btn-modal-pair") as HTMLButtonElement;
   const inputCode = document.getElementById("input-pairing-code") as HTMLInputElement;
   const targetIpInput = document.getElementById("modal-target-ip") as HTMLInputElement;
+  const targetIdInput = document.getElementById("modal-target-id") as HTMLInputElement;
   const errorMsg = document.getElementById("pairing-error-msg")!;
 
   const closeModal = () => {
@@ -307,10 +431,38 @@ function setupPairingModal() {
     inputCode.value = "";
     errorMsg.classList.add("hidden");
     btnPair.disabled = false;
+    // Return focus to whatever opened the dialog (e.g. the Pair button).
+    pairingModalOpener?.focus();
+    pairingModalOpener = null;
   };
 
   btnClose.addEventListener("click", closeModal);
   btnCancel.addEventListener("click", closeModal);
+
+  // Keyboard: Esc closes, Enter in the code field submits, Tab stays in the dialog.
+  modal.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeModal();
+    } else if (e.key === "Enter" && e.target === inputCode && !btnPair.disabled) {
+      e.preventDefault();
+      btnPair.click();
+    } else if (e.key === "Tab") {
+      const focusable = Array.from(
+        modal.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([type=hidden])")
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  });
 
   // Auto-format "XXXX XXXX"
   inputCode.addEventListener("input", () => {
@@ -323,6 +475,7 @@ function setupPairingModal() {
 
   btnPair.addEventListener("click", async () => {
     const ip = targetIpInput.value;
+    const id = targetIdInput.value || null;
     const code = inputCode.value.trim();
 
     if (code.replace(/\s/g, "").length !== 8) {
@@ -335,7 +488,7 @@ function setupPairingModal() {
     errorMsg.classList.add("hidden");
 
     try {
-      const res = await invoke<PairResponse>("pair_pal", { ip, code });
+      const res = await invoke<PairResponse>("pair_pal", { ip, code, id });
       if (res.ok) {
         closeModal();
         const scanCard = document.getElementById("scan-results-card");
@@ -355,7 +508,10 @@ function setupPairingModal() {
   });
 }
 
-function openPairingModal(ip: string, name: string) {
+let pairingModalOpener: HTMLElement | null = null;
+
+function openPairingModal(ip: string, name: string, id: string | null) {
+  pairingModalOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const modal = document.getElementById("pairing-modal")!;
   const title = document.getElementById("modal-pal-name")!;
   const targetIpInput = document.getElementById("modal-target-ip") as HTMLInputElement;
@@ -364,6 +520,8 @@ function openPairingModal(ip: string, name: string) {
 
   title.textContent = `Pair with ${name}`;
   targetIpInput.value = ip;
+  (document.getElementById("modal-target-id") as HTMLInputElement).value =
+    id && id !== "unknown" ? id : "";
   inputCode.value = "";
   errorMsg.classList.add("hidden");
 
@@ -380,9 +538,6 @@ function setupCalendarTab() {
   const btnMs = document.getElementById("btn-connect-ms")!;
   const btnIcs = document.getElementById("btn-connect-ics")!;
   const btnRefresh = document.getElementById("btn-refresh-calendar")!;
-  const togglePrivate = document.getElementById("toggle-private-mode")!;
-  const toggleAllDay = document.getElementById("toggle-skip-allday")!;
-  const toggleTentative = document.getElementById("toggle-skip-tentative")!;
 
   btnGoogle.addEventListener("click", async () => {
     try {
@@ -472,9 +627,10 @@ function setupCalendarTab() {
     syncAndPreviewEvents();
   });
 
-  togglePrivate.addEventListener("change", () => syncAndPreviewEvents());
-  toggleAllDay.addEventListener("change", () => syncAndPreviewEvents());
-  toggleTentative.addEventListener("change", () => syncAndPreviewEvents());
+  // The Private Mode / filter toggles are handled once, in
+  // setupRemindersTab: save first, then sync. A second listener here used to
+  // trigger a push before the new setting was saved, so the Pal could get
+  // real titles right after Private Mode was switched on.
 }
 
 async function refreshConnectedAccounts() {
@@ -500,7 +656,15 @@ async function refreshConnectedAccounts() {
     const msStatus = document.getElementById("ms-status");
     const btnMs = document.getElementById("btn-connect-ms") as HTMLButtonElement | null;
     if (msStatus && btnMs) {
-      if (accs.microsoft_connected) {
+      btnMs.disabled = false;
+      if (!accs.microsoft_available && !accs.microsoft_connected) {
+        // This build has no Microsoft client ID yet (KAN-39).
+        msStatus.textContent = "Outlook / Microsoft 365 support is coming soon";
+        msStatus.className = "text-muted text-sm";
+        btnMs.textContent = "Coming Soon";
+        btnMs.className = "btn btn-secondary";
+        btnMs.disabled = true;
+      } else if (accs.microsoft_connected) {
         msStatus.textContent = "Connected via Microsoft Entra";
         msStatus.className = "text-success text-sm";
         btnMs.textContent = "Disconnect";
@@ -571,33 +735,46 @@ async function persistCurrentSyncConfig() {
   try {
     await invoke("save_calendar_sync_config", { config });
   } catch (err) {
-    console.error("Failed to save sync config:", err);
+    alert("Couldn't save your calendar settings: " + err);
   }
 }
 
 function setupRemindersTab() {
   const btnTestChime = document.getElementById("btn-test-chime");
+  const chimeStatus = document.getElementById("chime-status");
   if (btnTestChime) {
     btnTestChime.addEventListener("click", async () => {
       btnTestChime.setAttribute("disabled", "true");
       btnTestChime.textContent = "Chiming...";
+      chimeStatus?.classList.add("hidden");
       try {
-        await invoke("test_device_chime");
+        // Plays the meeting chime (firmware 1.1.0+); older firmware shows a
+        // test message instead, and the backend says which happened.
+        const result = await invoke<string>("test_device_chime");
+        showChimeStatus(result, false);
       } catch (err) {
-        alert("Failed to play chime: " + err);
+        showChimeStatus(`Couldn't play the chime: ${err}`, true);
       } finally {
         btnTestChime.removeAttribute("disabled");
         btnTestChime.textContent = "Play Test Chime";
       }
     });
   }
+  function showChimeStatus(text: string, isError: boolean) {
+    if (!chimeStatus) return;
+    chimeStatus.textContent = text;
+    chimeStatus.className = `text-xs mt-2 ${isError ? "text-danger" : "text-muted"}`;
+  }
 
-  // Auto-persist and re-sync whenever reminder settings change
+  // Settings changes: save first (saving also starts the background push
+  // with the new settings), then refresh the preview without a second push.
+  const onSettingChanged = async () => {
+    await persistCurrentSyncConfig();
+    await syncAndPreviewEvents(false);
+  };
+
   document.querySelectorAll<HTMLInputElement>('input[name="lead-time"]').forEach((radio) => {
-    radio.addEventListener("change", async () => {
-      await persistCurrentSyncConfig();
-      syncAndPreviewEvents();
-    });
+    radio.addEventListener("change", onSettingChanged);
   });
 
   const togglePrivate = document.getElementById("toggle-private-mode");
@@ -605,12 +782,7 @@ function setupRemindersTab() {
   const toggleTentative = document.getElementById("toggle-skip-tentative");
 
   [togglePrivate, toggleAllDay, toggleTentative].forEach((el) => {
-    if (el) {
-      el.addEventListener("change", async () => {
-        await persistCurrentSyncConfig();
-        syncAndPreviewEvents();
-      });
-    }
+    el?.addEventListener("change", onSettingChanged);
   });
 }
 
@@ -654,7 +826,9 @@ function renderEventsPreview(events: CalendarEvent[]) {
   }
 }
 
-async function syncAndPreviewEvents() {
+// Fetches events for the preview. With `pushToPal` it also asks the sync
+// engine to push to the Pal now (manual "Sync Now", account changes).
+async function syncAndPreviewEvents(pushToPal = true) {
   const previewContainer = document.getElementById("calendar-events-preview");
   const btnRefresh = document.getElementById("btn-refresh-calendar") as HTMLButtonElement | null;
   if (!previewContainer) return;
@@ -676,13 +850,15 @@ async function syncAndPreviewEvents() {
     };
 
     const events = await invoke<CalendarEvent[]>("sync_calendar_events", { settings });
-
-    // Trigger immediate background sync & push to paired CubiPal (KAN-33)
-    await invoke("trigger_calendar_sync");
-
     renderEventsPreview(events);
+
+    // Push to the paired CubiPal with the saved settings (KAN-33)
+    if (pushToPal) await invoke("trigger_calendar_sync");
   } catch (err) {
-    previewContainer.innerHTML = `<p class="text-danger text-xs py-2">Sync failed: ${escapeHtml(String(err))}</p>`;
+    const p = document.createElement("p");
+    p.className = "text-danger text-xs py-2";
+    p.textContent = `Sync failed: ${err}`;
+    previewContainer.replaceChildren(p);
   } finally {
     if (btnRefresh) {
       btnRefresh.disabled = false;
@@ -747,9 +923,165 @@ async function setupTrayListeners() {
     renderEventsPreview(event.payload);
   });
 
-  await listen<number>("snooze-alerts", () => {
-    alert("Meeting reminders snoozed for 1 hour on your CubiPal.");
+  // Background sync failures (expired sign-in, feed down): the Pal keeps
+  // its last events, and the preview says why.
+  await listen<string>("calendar-sync-error", (event) => {
+    const preview = document.getElementById("calendar-events-preview");
+    if (!preview) return;
+    const p = document.createElement("p");
+    p.className = "text-danger text-xs py-2";
+    p.textContent = `Sync failed: ${event.payload}`;
+    preview.replaceChildren(p);
+    refreshConnectedAccounts();
   });
+
+  // Desktop app self-update: tray "Check for Updates..." and the daily background check.
+  await listen("check-desktop-updates", async () => {
+    try {
+      const info = await invoke<DesktopUpdateInfo | null>("check_desktop_update");
+      await offerDesktopUpdate(info, true);
+    } catch (e) {
+      alert("Couldn't check for app updates: " + e);
+    }
+  });
+
+  // The backend only runs the background check while Automatic Updates is on.
+  await listen<DesktopUpdateInfo>("desktop-update-available", async (event) => {
+    await offerDesktopUpdate(event.payload, false);
+  });
+
+  // Tray "Custom Focus...": ask for the minutes, then start the Pal's timer.
+  await listen("custom-focus", () => openFocusModal());
+}
+
+// --------------------------------------------------------------------------
+// Custom Focus dialog (TST-15)
+// --------------------------------------------------------------------------
+
+function openFocusModal() {
+  const modal = document.getElementById("focus-modal")!;
+  const input = document.getElementById("input-focus-minutes") as HTMLInputElement;
+  const errorMsg = document.getElementById("focus-error-msg")!;
+  errorMsg.classList.add("hidden");
+  modal.classList.remove("hidden");
+  setTimeout(() => {
+    input.focus();
+    input.select();
+  }, 50);
+}
+
+function setupFocusModal() {
+  const modal = document.getElementById("focus-modal")!;
+  const input = document.getElementById("input-focus-minutes") as HTMLInputElement;
+  const errorMsg = document.getElementById("focus-error-msg")!;
+  const btnStart = document.getElementById("btn-focus-start") as HTMLButtonElement;
+
+  const close = () => {
+    modal.classList.add("hidden");
+    btnStart.disabled = false;
+  };
+  const showError = (msg: string) => {
+    errorMsg.textContent = msg;
+    errorMsg.classList.remove("hidden");
+  };
+
+  document.getElementById("btn-focus-close")!.addEventListener("click", close);
+  document.getElementById("btn-focus-cancel")!.addEventListener("click", close);
+  modal.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    } else if (e.key === "Enter" && e.target === input && !btnStart.disabled) {
+      e.preventDefault();
+      btnStart.click();
+    }
+  });
+
+  btnStart.addEventListener("click", async () => {
+    const minutes = Number(input.value);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) {
+      showError("Enter a whole number of minutes from 1 to 180.");
+      return;
+    }
+    btnStart.disabled = true;
+    errorMsg.classList.add("hidden");
+    try {
+      await invoke("start_device_timer", { minutes, label: "Focus" });
+      close();
+      await refreshDeviceStatus();
+    } catch (err) {
+      showError(`Couldn't start the timer: ${err}`);
+      btnStart.disabled = false;
+    }
+  });
+}
+
+// --------------------------------------------------------------------------
+// General tab: Launch at Startup and Automatic Updates (TST-14)
+// --------------------------------------------------------------------------
+
+async function setupGeneralTab() {
+  const autostart = document.getElementById("toggle-autostart") as HTMLInputElement | null;
+  const autoUpdate = document.getElementById("toggle-autoupdate") as HTMLInputElement | null;
+  const versionEl = document.getElementById("app-version");
+
+  try {
+    const s = await invoke<GeneralSettings>("get_general_settings");
+    if (autostart) autostart.checked = s.autostart;
+    if (autoUpdate) autoUpdate.checked = s.auto_update;
+    if (versionEl) versionEl.textContent = `Version ${s.app_version}`;
+  } catch (err) {
+    console.warn("Failed to load general settings:", err);
+  }
+
+  autostart?.addEventListener("change", async () => {
+    const wanted = autostart.checked;
+    autostart.disabled = true;
+    try {
+      // Show what the OS actually has now.
+      autostart.checked = await invoke<boolean>("set_autostart", { enabled: wanted });
+    } catch (err) {
+      autostart.checked = !wanted;
+      alert(String(err));
+    } finally {
+      autostart.disabled = false;
+    }
+  });
+
+  autoUpdate?.addEventListener("change", async () => {
+    const wanted = autoUpdate.checked;
+    try {
+      await invoke("set_auto_update", { enabled: wanted });
+    } catch (err) {
+      autoUpdate.checked = !wanted;
+      alert(String(err));
+    }
+  });
+}
+
+let desktopUpdatePromptOpen = false;
+
+async function offerDesktopUpdate(info: DesktopUpdateInfo | null, manual: boolean) {
+  if (!info) {
+    if (manual) alert("CubiPal Desktop is up to date.");
+    return;
+  }
+  if (desktopUpdatePromptOpen) return;
+  desktopUpdatePromptOpen = true;
+  try {
+    await invoke("show_preferences_window");
+    if (
+      confirm(
+        `CubiPal Desktop ${info.version} is available (you have ${info.current_version}).\n\nInstall it now? The app will restart.`
+      )
+    ) {
+      await invoke("install_desktop_update");
+    }
+  } catch (e) {
+    alert("App update failed: " + e);
+  } finally {
+    desktopUpdatePromptOpen = false;
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -759,22 +1091,64 @@ async function setupTrayListeners() {
 async function checkFirmwareUpdate() {
   const otaCard = document.getElementById("ota-card");
   if (!otaCard) return;
+  const titleEl = document.getElementById("ota-title");
+  const descEl = document.getElementById("ota-desc");
+  const btnInstall = document.getElementById("btn-install-ota") as HTMLButtonElement | null;
+
+  const btnNotes = document.getElementById("btn-ota-notes");
+  const btnRecover = document.getElementById("btn-ota-recover");
+  // Don't touch the card while an update is running.
+  if (otaInProgress) return;
 
   try {
-    const info = await invoke<FirmwareUpdateInfo>("check_firmware_update");
-    if (info && info.available && info.download_url) {
-      activeFirmwareUrl = info.download_url;
-      activeFirmwareSha256 = info.sha256;
-      const titleEl = document.getElementById("ota-title");
-      const descEl = document.getElementById("ota-desc");
+    const info = await invoke<FirmwareUpdateInfo>("check_firmware_update", { force: false });
+    if (info.available && info.latest_version) {
+      // An update exists. It can be installed unless the backend says why not
+      // (e.g. the Pal doesn't report its board type).
+      firmwareUpdateReady = !info.blocked_reason;
+      otaNotesUrl = info.notes_url;
+      otaRecoverUrl = info.recover_url;
       if (titleEl) titleEl.textContent = `Firmware v${info.latest_version} Available`;
-      if (descEl) descEl.textContent = `Your Pal is running v${info.current_version}. Update directly over Wi-Fi (SHA-256 verified).`;
+      const current =
+        info.current_version === "unknown version"
+          ? "We can't tell which firmware version your Pal has."
+          : `Your Pal has firmware ${info.current_version}.`;
+      if (descEl) {
+        descEl.textContent = info.blocked_reason
+          ? `${current} ${info.blocked_reason}`
+          : `${current} Update over Wi-Fi; the download is checked against its published size and SHA-256 checksum.`;
+      }
+      // A fresh offer gets a fresh button (TR2-08).
+      resetOtaInstallUi();
+      if (btnInstall) btnInstall.classList.toggle("hidden", !firmwareUpdateReady);
+      btnRecover?.classList.toggle("hidden", !otaRecoverUrl);
+      btnNotes?.classList.toggle("hidden", !otaNotesUrl);
       otaCard.classList.remove("hidden");
     } else {
+      firmwareUpdateReady = false;
       otaCard.classList.add("hidden");
     }
   } catch {
+    firmwareUpdateReady = false;
     otaCard.classList.add("hidden");
+  }
+}
+
+/** Puts the Install button and the progress box back to their starting state. */
+function resetOtaInstallUi() {
+  const btnInstall = document.getElementById("btn-install-ota") as HTMLButtonElement | null;
+  const progressBox = document.getElementById("ota-progress-box");
+  const progressBar = document.getElementById("ota-progress-bar");
+  const progressText = document.getElementById("ota-progress-text");
+  if (btnInstall) {
+    btnInstall.disabled = false;
+    btnInstall.textContent = "Install Update";
+  }
+  progressBox?.classList.add("hidden");
+  if (progressBar) progressBar.style.width = "0%";
+  if (progressText) {
+    progressText.textContent = "Preparing...";
+    progressText.classList.remove("text-danger");
   }
 }
 
@@ -784,28 +1158,38 @@ function setupOta() {
   const progressBar = document.getElementById("ota-progress-bar");
   const progressText = document.getElementById("ota-progress-text");
 
+  document.getElementById("btn-ota-recover")?.addEventListener("click", async () => {
+    if (otaRecoverUrl) await openUrl(otaRecoverUrl);
+  });
+  document.getElementById("btn-ota-notes")?.addEventListener("click", async () => {
+    if (otaNotesUrl) await openUrl(otaNotesUrl);
+  });
+
   if (btnInstall) {
     btnInstall.addEventListener("click", async () => {
-      if (!activeFirmwareUrl) return;
+      if (!firmwareUpdateReady) return;
       if (
         !confirm(
-          "Install firmware update on your CubiPal now?\n\nYour Pal will verify the SHA-256 signature, flash the update over Wi-Fi, and restart automatically.\n\nNote: Updates pause automatically during active calendar meetings or focus timers."
+          "Install firmware update on your CubiPal now?\n\nThe download is checked (size and SHA-256) before it is sent to your Pal. Your Pal installs it over Wi-Fi and restarts.\n\nThe update won't start while a focus timer is running or a meeting is about to start."
         )
       ) {
         return;
       }
       btnInstall.disabled = true;
       btnInstall.textContent = "Updating...";
+      otaInProgress = true;
       if (progressBox) progressBox.classList.remove("hidden");
 
       try {
-        await invoke("install_firmware_update", {
-          downloadUrl: activeFirmwareUrl,
-          expectedSha256: activeFirmwareSha256,
-          force: false,
-        });
-      } catch (err: any) {
-        alert(err);
+        await invoke("install_firmware_update", { force: false });
+      } catch (err) {
+        otaInProgress = false;
+        // The backend names the failed stage and the Pal's own reason; keep it
+        // visible in the card rather than in a passing alert (TST-19).
+        if (progressText) {
+          progressText.textContent = String(err);
+          progressText.classList.add("text-danger");
+        }
         btnInstall.disabled = false;
         btnInstall.textContent = "Retry Update";
       }
@@ -816,18 +1200,27 @@ function setupOta() {
     const p = event.payload;
     if (progressBox) progressBox.classList.remove("hidden");
     if (progressBar) progressBar.style.width = `${p.percent}%`;
-    if (progressText) progressText.textContent = p.message;
+    if (progressText) {
+      progressText.textContent = p.message;
+      progressText.classList.toggle("text-danger", p.stage === "error");
+    }
 
     if (p.stage === "completed") {
       if (btnInstall) {
         btnInstall.textContent = "Updated!";
       }
+      // The Pal is rebooting. Once it answers again its version is checked
+      // afresh, which hides the card or offers the next update with a reset
+      // Install button (TR2-08).
       setTimeout(async () => {
-        if (progressBox) progressBox.classList.add("hidden");
-        if (progressBar) progressBar.style.width = "0%";
+        otaInProgress = false;
+        lastFirmwareCheckAt = 0;
+        resetOtaInstallUi();
+        document.getElementById("ota-card")?.classList.add("hidden");
         await refreshDeviceStatus();
       }, 5000);
     } else if (p.stage === "error") {
+      otaInProgress = false;
       if (btnInstall) {
         btnInstall.disabled = false;
         btnInstall.textContent = "Retry Update";
